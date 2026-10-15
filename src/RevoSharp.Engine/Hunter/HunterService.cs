@@ -5,6 +5,8 @@ using System.Text;
 using Microsoft.Win32;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Discovery;
+using RevoSharp.Engine.Execution;
+using RevoSharp.Engine.Safety;
 
 namespace RevoSharp.Engine.Hunter;
 
@@ -14,7 +16,10 @@ public class HunterService
     {
         "csrss.exe", "lsass.exe", "services.exe", "dwm.exe", "smss.exe",
         "wininit.exe", "winlogon.exe", "svchost.exe", "ntoskrnl.exe", "fontdrvhost.exe",
-        "sihost.exe", "taskhostw.exe", "spoolsv.exe", "registry", "system", "idle"
+        "sihost.exe", "taskhostw.exe", "spoolsv.exe", "explorer.exe", "taskmgr.exe",
+        "regedit.exe", "mmc.exe", "SearchHost.exe", "ShellExperienceHost.exe",
+        "StartMenuExperienceHost.exe", "ApplicationFrameHost.exe", "RuntimeBroker.exe",
+        "ctfmon.exe", "dllhost.exe", "conhost.exe", "registry", "system", "idle"
     };
 
     #region Win32 P/Invoke
@@ -75,12 +80,11 @@ public class HunterService
         IntPtr rawHwnd = WindowFromPoint(point);
         if (rawHwnd == IntPtr.Zero) return null;
 
-        // Try getting top-level window root
         IntPtr rootHwnd = GetAncestor(rawHwnd, GA_ROOT);
         IntPtr targetHwnd = rootHwnd != IntPtr.Zero ? rootHwnd : rawHwnd;
 
         GetWindowThreadProcessId(targetHwnd, out uint pid);
-        if (pid == 0) return null;
+        if (pid == 0 || pid == (uint)Environment.ProcessId) return null;
 
         var sbTitle = new StringBuilder(512);
         GetWindowText(targetHwnd, sbTitle, 512);
@@ -119,7 +123,6 @@ public class HunterService
             DirectoryPath = !string.IsNullOrEmpty(exePath) ? (Path.GetDirectoryName(exePath) ?? string.Empty) : string.Empty
         };
 
-        // File Version & Publisher Information
         if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
         {
             try
@@ -135,7 +138,11 @@ public class HunterService
             catch { }
         }
 
-        // Bitness check
+        if (string.IsNullOrWhiteSpace(info.WindowTitle))
+        {
+            info.WindowTitle = processName;
+        }
+
         try
         {
             using var p = Process.GetProcessById((int)pid);
@@ -148,18 +155,15 @@ public class HunterService
             info.Architecture = info.Is64Bit ? "64 位" : "32 位";
         }
 
-        // System Critical Protection Guard (Option A)
+        string winFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\') + "\\";
         if (SystemCriticalProcesses.Contains(processName) ||
-            (!string.IsNullOrEmpty(exePath) && exePath.Contains(@"\Windows\System32\", StringComparison.OrdinalIgnoreCase) && !exePath.Contains(@"\cmd.exe", StringComparison.OrdinalIgnoreCase)))
+            (!string.IsNullOrEmpty(exePath) && exePath.StartsWith(winFolder, StringComparison.OrdinalIgnoreCase)))
         {
             info.IsSystemCritical = true;
-            info.SystemProtectionReason = "Windows 系统核心组件，已启用主动防护以防系统蓝屏或崩溃";
+            info.SystemProtectionReason = "Windows 系统核心组件或外壳进程，已启用主动防护以防系统崩溃或桌面消失";
         }
 
-        // Match with Installed Apps or Derive Virtual App
         ResolveInstalledApp(info, installedApps);
-
-        // Scan Autostart persistence
         ScanAutostartPersistence(info);
 
         return info;
@@ -229,6 +233,7 @@ public class HunterService
             // 1. Exact or Sub-Directory match
             var matched = installedApps.FirstOrDefault(a =>
                 !string.IsNullOrEmpty(a.InstallLocation) &&
+                !AppLocator.IsProtectedSharedDirectory(a.InstallLocation) &&
                 (targetDir.Equals(a.InstallLocation.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) ||
                  targetDir.StartsWith(a.InstallLocation.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)));
 
@@ -241,9 +246,12 @@ public class HunterService
             if (matched == null)
             {
                 string exeNoExt = Path.GetFileNameWithoutExtension(info.ExecutablePath);
-                matched = installedApps.FirstOrDefault(a =>
-                    a.DisplayName.Equals(exeNoExt, StringComparison.OrdinalIgnoreCase) ||
-                    a.DisplayName.StartsWith(exeNoExt + " ", StringComparison.OrdinalIgnoreCase));
+                if (exeNoExt.Length >= 4)
+                {
+                    matched = installedApps.FirstOrDefault(a =>
+                        a.DisplayName.Equals(exeNoExt, StringComparison.OrdinalIgnoreCase) ||
+                        a.DisplayName.StartsWith(exeNoExt + " ", StringComparison.OrdinalIgnoreCase));
+                }
             }
 
             if (matched != null)
@@ -255,12 +263,14 @@ public class HunterService
             }
         }
 
-        // Option A: Auto-derive virtual application profile for unregistered / portable / popup software
         string dispName = !string.IsNullOrEmpty(info.WindowTitle) ? info.WindowTitle : Path.GetFileNameWithoutExtension(info.ExecutablePath);
         if (string.IsNullOrWhiteSpace(dispName)) dispName = info.ProcessName;
 
+        bool isSharedDir = AppLocator.IsProtectedSharedDirectory(info.DirectoryPath);
+        string safeInstallDir = isSharedDir ? string.Empty : info.DirectoryPath;
+
         string uninstallStr = string.Empty;
-        if (!string.IsNullOrEmpty(info.DirectoryPath) && Directory.Exists(info.DirectoryPath))
+        if (!isSharedDir && !string.IsNullOrEmpty(info.DirectoryPath) && Directory.Exists(info.DirectoryPath))
         {
             try
             {
@@ -282,12 +292,13 @@ public class HunterService
             DisplayName = dispName,
             DisplayVersion = info.ProductVersion,
             Publisher = !string.IsNullOrEmpty(info.Publisher) ? info.Publisher : "未知发布者 (便携/独立程序)",
-            InstallLocation = info.DirectoryPath,
+            InstallLocation = safeInstallDir,
             DisplayIcon = info.ExecutablePath,
             UninstallString = uninstallStr,
             QuietUninstallString = string.Empty,
             Architecture = info.Architecture,
-            Is64Bit = info.Is64Bit
+            Is64Bit = info.Is64Bit,
+            IsProtectedSingleFile = isSharedDir
         };
 
         info.IsRegisteredApp = false;
@@ -301,22 +312,24 @@ public class HunterService
         if (string.IsNullOrEmpty(info.ExecutablePath)) return;
 
         string exeName = Path.GetFileName(info.ExecutablePath);
+        string exeNoExt = Path.GetFileNameWithoutExtension(info.ExecutablePath);
         string exePath = info.ExecutablePath;
 
-        // 1. Registry HKCU Run & RunOnce
         CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, info.AutostartDescriptions);
         CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, info.AutostartDescriptions);
-
-        // 2. Registry HKLM Run & RunOnce
         CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, info.AutostartDescriptions);
         CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, info.AutostartDescriptions);
 
-        // 3. Startup Folder Shortcuts
+        if (Environment.Is64BitOperatingSystem)
+        {
+            CheckRegistryRun(Registry.LocalMachine, @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, info.AutostartDescriptions);
+        }
+
         string userStartup = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
-        CheckStartupFolder(userStartup, exeName, exePath, info.AutostartDescriptions);
+        CheckStartupFolder(userStartup, exeName, exeNoExt, exePath, info.AutostartDescriptions);
 
         string commonStartup = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup);
-        CheckStartupFolder(commonStartup, exeName, exePath, info.AutostartDescriptions);
+        CheckStartupFolder(commonStartup, exeName, exeNoExt, exePath, info.AutostartDescriptions);
 
         info.HasAutostartEntry = info.AutostartDescriptions.Count > 0;
     }
@@ -340,15 +353,16 @@ public class HunterService
         catch { }
     }
 
-    private static void CheckStartupFolder(string folder, string exeName, string exePath, List<string> list)
+    private static void CheckStartupFolder(string folder, string exeName, string exeNoExt, string exePath, List<string> list)
     {
         if (!Directory.Exists(folder)) return;
         try
         {
             foreach (var file in Directory.GetFiles(folder))
             {
-                string fname = Path.GetFileName(file);
-                if (fname.Contains(exeName, StringComparison.OrdinalIgnoreCase))
+                string fnameNoExt = Path.GetFileNameWithoutExtension(file);
+                if ((exeNoExt.Length >= 3 && fnameNoExt.Contains(exeNoExt, StringComparison.OrdinalIgnoreCase)) ||
+                    ShortcutTargetMatches(file, exeName, exePath))
                 {
                     list.Add($"启动文件夹: {file}");
                 }
@@ -357,25 +371,61 @@ public class HunterService
         catch { }
     }
 
+    private static bool ShortcutTargetMatches(string lnkFile, string exeName, string exePath)
+    {
+        if (!lnkFile.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) return false;
+        dynamic? wshShell = null;
+        dynamic? shortcut = null;
+        try
+        {
+            Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType == null) return false;
+            wshShell = Activator.CreateInstance(shellType);
+            if (wshShell == null) return false;
+            shortcut = wshShell.CreateShortcut(lnkFile);
+            string? target = shortcut?.TargetPath as string;
+            if (!string.IsNullOrEmpty(target))
+            {
+                return target.Equals(exePath, StringComparison.OrdinalIgnoreCase) ||
+                       Path.GetFileName(target).Equals(exeName, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch { }
+        finally
+        {
+            if (shortcut != null && Marshal.IsComObject(shortcut)) Marshal.FinalReleaseComObject(shortcut);
+            if (wshShell != null && Marshal.IsComObject(wshShell)) Marshal.FinalReleaseComObject(wshShell);
+        }
+        return false;
+    }
+
     public bool DisableAutostart(HunterTargetInfo info)
     {
+        if (string.IsNullOrEmpty(info.ExecutablePath)) return false;
+
         bool changed = false;
         string exeName = Path.GetFileName(info.ExecutablePath);
+        string exeNoExt = Path.GetFileNameWithoutExtension(info.ExecutablePath);
         string exePath = info.ExecutablePath;
+        string appName = info.WindowTitle;
 
-        changed |= RemoveRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath);
-        changed |= RemoveRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath);
-        changed |= RemoveRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath);
-        changed |= RemoveRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath);
+        changed |= RemoveRegistryRun(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, appName);
+        changed |= RemoveRegistryRun(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, appName);
+        changed |= RemoveRegistryRun(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, appName);
+        changed |= RemoveRegistryRun(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, appName);
+        if (Environment.Is64BitOperatingSystem)
+        {
+            changed |= RemoveRegistryRun(Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, appName);
+        }
 
-        changed |= RemoveStartupFiles(Environment.GetFolderPath(Environment.SpecialFolder.Startup), exeName);
-        changed |= RemoveStartupFiles(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), exeName);
+        changed |= RemoveStartupFiles(Environment.GetFolderPath(Environment.SpecialFolder.Startup), exeName, exeNoExt, exePath);
+        changed |= RemoveStartupFiles(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), exeName, exeNoExt, exePath);
 
         ScanAutostartPersistence(info);
         return changed;
     }
 
-    private static bool RemoveRegistryRun(RegistryKey root, string subKey, string exeName, string exePath)
+    private static bool RemoveRegistryRun(RegistryKey root, string hiveShort, string subKey, string exeName, string exePath, string appName)
     {
         try
         {
@@ -388,6 +438,7 @@ public class HunterService
                 if (!string.IsNullOrEmpty(val) &&
                     (val.Contains(exeName, StringComparison.OrdinalIgnoreCase) || val.Contains(exePath, StringComparison.OrdinalIgnoreCase)))
                 {
+                    _ = RegistryBackup.ExportValueAsync($@"{hiveShort}\{subKey}", valName, val, appName).GetAwaiter().GetResult();
                     key.DeleteValue(valName, false);
                     removed = true;
                 }
@@ -397,7 +448,7 @@ public class HunterService
         catch { return false; }
     }
 
-    private static bool RemoveStartupFiles(string folder, string exeName)
+    private static bool RemoveStartupFiles(string folder, string exeName, string exeNoExt, string exePath)
     {
         if (!Directory.Exists(folder)) return false;
         bool removed = false;
@@ -405,10 +456,14 @@ public class HunterService
         {
             foreach (var file in Directory.GetFiles(folder))
             {
-                if (Path.GetFileName(file).Contains(exeName, StringComparison.OrdinalIgnoreCase))
+                string fnameNoExt = Path.GetFileNameWithoutExtension(file);
+                if ((exeNoExt.Length >= 3 && fnameNoExt.Contains(exeNoExt, StringComparison.OrdinalIgnoreCase)) ||
+                    ShortcutTargetMatches(file, exeName, exePath))
                 {
-                    File.Delete(file);
-                    removed = true;
+                    if (FileBackup.SendToRecycleBin(file))
+                    {
+                        removed = true;
+                    }
                 }
             }
         }
@@ -421,19 +476,20 @@ public class HunterService
         if (rootPid <= 4) return false;
         try
         {
-            var pidsToKill = new List<int> { rootPid };
-            FindChildProcesses(rootPid, pidsToKill);
+            var pidsToKill = UninstallerRunner.GetDescendantPids(rootPid);
+            bool anyKilled = false;
 
-            foreach (int pid in pidsToKill.OrderByDescending(p => p == rootPid))
+            foreach (int pid in pidsToKill.OrderByDescending(p => p != rootPid))
             {
                 try
                 {
                     using var proc = Process.GetProcessById(pid);
-                    proc.Kill(true);
+                    proc.Kill(entireProcessTree: true);
+                    anyKilled = true;
                 }
                 catch { }
             }
-            return true;
+            return anyKilled;
         }
         catch
         {
@@ -441,24 +497,139 @@ public class HunterService
         }
     }
 
-    private static void FindChildProcesses(int parentPid, List<int> pids)
+    /// <summary>
+    /// Enumerates all system-wide and current-user autostart entries for the Autorun Manager.
+    /// </summary>
+    public List<AutostartEntry> GetAllAutostartEntries()
     {
-        try
+        var entries = new List<AutostartEntry>();
+
+        var regSources = new[]
         {
-            // Simple process scanning for children
-            foreach (var proc in Process.GetProcesses())
+            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run", "当前用户 Run"),
+            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", "当前用户 RunOnce"),
+            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run", "系统全局 Run (x64)"),
+            (Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", "系统全局 Run (x86)"),
+            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", "系统全局 RunOnce")
+        };
+
+        foreach (var (root, hiveName, subKey, label) in regSources)
+        {
+            try
             {
-                try
+                using var key = root.OpenSubKey(subKey);
+                if (key == null) continue;
+                foreach (var valName in key.GetValueNames())
                 {
-                    // Note: In .NET 8 Process doesn't expose ParentProcessId directly,
-                    // but Kill(entireProcessTree: true) in .NET 8 already terminates the entire process tree on Windows!
-                }
-                finally
-                {
-                    proc.Dispose();
+                    string cmd = key.GetValue(valName)?.ToString() ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(cmd)) continue;
+
+                    string exe = AppLocator.ExtractExeFromCommand(cmd);
+                    bool exists = !string.IsNullOrEmpty(exe) && File.Exists(exe);
+                    string pub = string.Empty;
+                    if (exists)
+                    {
+                        try { pub = FileVersionInfo.GetVersionInfo(exe).CompanyName ?? string.Empty; } catch { }
+                    }
+
+                    entries.Add(new AutostartEntry
+                    {
+                        Name = valName,
+                        Command = cmd,
+                        ExecutablePath = exe,
+                        LocationType = label,
+                        FullLocation = $@"{hiveName}\{subKey} [{valName}]",
+                        RegistryHiveName = hiveName,
+                        RegistrySubKey = subKey,
+                        IsStartupShortcut = false,
+                        FileExists = exists,
+                        Publisher = pub
+                    });
                 }
             }
+            catch { }
         }
-        catch { }
+
+        var startupFolders = new[]
+        {
+            (Environment.GetFolderPath(Environment.SpecialFolder.Startup), "用户启动文件夹"),
+            (Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), "公共启动文件夹")
+        };
+
+        foreach (var (folder, label) in startupFolders)
+        {
+            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) continue;
+            try
+            {
+                foreach (var file in Directory.GetFiles(folder))
+                {
+                    string name = Path.GetFileNameWithoutExtension(file);
+                    if (name.Equals("desktop", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    string target = file;
+                    if (file.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                    {
+                        target = ResolveShortcutTarget(file) ?? file;
+                    }
+
+                    bool exists = File.Exists(target);
+                    string pub = string.Empty;
+                    if (exists)
+                    {
+                        try { pub = FileVersionInfo.GetVersionInfo(target).CompanyName ?? string.Empty; } catch { }
+                    }
+
+                    entries.Add(new AutostartEntry
+                    {
+                        Name = name,
+                        Command = target,
+                        ExecutablePath = target,
+                        LocationType = label,
+                        FullLocation = file,
+                        IsStartupShortcut = true,
+                        FileExists = exists,
+                        Publisher = pub
+                    });
+                }
+            }
+            catch { }
+        }
+
+        return entries;
+    }
+
+    public bool RemoveAutostartEntry(AutostartEntry entry)
+    {
+        if (entry.IsStartupShortcut)
+        {
+            return FileBackup.SendToRecycleBin(entry.FullLocation);
+        }
+
+        _ = RegistryBackup.ExportValueAsync($@"{entry.RegistryHiveName}\{entry.RegistrySubKey}", entry.Name, entry.Command, $"Autostart_{entry.Name}").GetAwaiter().GetResult();
+        return RegistryBackup.DeleteValue(entry.RegistryHiveName, entry.RegistrySubKey, entry.Name);
+    }
+
+    public static string? ResolveShortcutTarget(string lnkPath)
+    {
+        dynamic? wshShell = null;
+        dynamic? shortcut = null;
+        try
+        {
+            Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType == null) return null;
+            wshShell = Activator.CreateInstance(shellType);
+            if (wshShell == null) return null;
+            shortcut = wshShell.CreateShortcut(lnkPath);
+            return shortcut?.TargetPath as string;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (shortcut != null && Marshal.IsComObject(shortcut)) Marshal.FinalReleaseComObject(shortcut);
+            if (wshShell != null && Marshal.IsComObject(wshShell)) Marshal.FinalReleaseComObject(wshShell);
+        }
     }
 }

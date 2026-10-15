@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using RevoSharp.Core.Models;
+using RevoSharp.Engine.Discovery;
 
 namespace RevoSharp.Engine.Scanning;
 
@@ -16,45 +17,64 @@ public static class ProfileBuilder
     {
         "microsoft", "windows", "installer", "setup", "uninstaller", "update", "patch",
         "corporation", "software", "edition", "system", "package", "application",
-        "tool", "client", "service", "desktop", "portable", "x86", "x64", "64-bit", "32-bit"
+        "tool", "client", "service", "desktop", "portable", "x86", "x64", "64-bit", "32-bit",
+        "inc", "ltd", "co", "studio", "pro", "free", "version", "official", "app", "driver"
+    };
+
+    private static readonly HashSet<string> GenericExecutableNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "app.exe", "update.exe", "updater.exe", "launcher.exe", "crashreporter.exe",
+        "crashhandler.exe", "crashhandler64.exe", "helper.exe", "service.exe", "daemon.exe",
+        "agent.exe", "cli.exe", "console.exe", "python.exe", "pythonw.exe", "java.exe",
+        "javaw.exe", "node.exe", "cmd.exe", "powershell.exe", "rundll32.exe", "msiexec.exe",
+        "vcredist_x86.exe", "vcredist_x64.exe", "dxsetup.exe", "7z.exe", "curl.exe", "git.exe"
     };
 
     public static TargetProfile Build(InstalledApp app)
     {
-        string rawLoc = app.InstallLocation.Trim().Trim('"').TrimEnd('\\');
-        string shortLoc = string.Empty;
+        string rawLoc = app.InstallLocation.Trim().Trim('"').TrimEnd('\\', '/');
+        string singleExeFile = string.Empty;
 
+        // Guard against protected shared folders (Desktop, Downloads, C:\Windows, etc.)
+        if (AppLocator.IsProtectedSharedDirectory(rawLoc))
+        {
+            rawLoc = string.Empty;
+        }
+
+        if (app.IsProtectedSingleFile && !string.IsNullOrEmpty(app.DisplayIcon) && File.Exists(app.DisplayIcon))
+        {
+            singleExeFile = app.DisplayIcon;
+        }
+
+        string shortLoc = string.Empty;
         if (!string.IsNullOrEmpty(rawLoc) && Directory.Exists(rawLoc))
         {
             var sb = new StringBuilder(260);
             if (GetShortPathName(rawLoc, sb, (uint)sb.Capacity) > 0)
             {
-                shortLoc = sb.ToString();
+                shortLoc = sb.ToString().TrimEnd('\\', '/');
             }
         }
 
-        // Extract GUID from ID, UninstallString, or QuietUninstallString
         string guid = string.Empty;
-        var guidMatch = GuidRegex.Match(app.Id + " " + app.UninstallString + " " + app.QuietUninstallString);
+        var guidMatch = GuidRegex.Match(app.Id + " " + app.UninstallKeyName + " " + app.UninstallString + " " + app.QuietUninstallString);
         if (guidMatch.Success)
         {
             guid = guidMatch.Value;
         }
 
-        // Extract Main Exe Names
         var exes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         ExtractExeName(app.DisplayIcon, exes);
         ExtractExeName(app.UninstallString, exes);
 
-        if (Directory.Exists(rawLoc))
+        if (!string.IsNullOrEmpty(rawLoc) && Directory.Exists(rawLoc))
         {
             try
             {
                 foreach (var file in Directory.GetFiles(rawLoc, "*.exe"))
                 {
                     string name = Path.GetFileName(file);
-                    if (!name.StartsWith("unins", StringComparison.OrdinalIgnoreCase) &&
-                        !name.StartsWith("setup", StringComparison.OrdinalIgnoreCase))
+                    if (!IsExcludedExeName(name))
                     {
                         exes.Add(name);
                     }
@@ -63,12 +83,11 @@ public static class ProfileBuilder
             catch { }
         }
 
-        // Tokenize DisplayName and Publisher
         var tokens = new List<string>();
-        foreach (var word in (app.DisplayName + " " + app.Publisher).Split([' ', '_', '-', '.', '(', ')'], StringSplitOptions.RemoveEmptyEntries))
+        foreach (var word in (app.DisplayName + " " + app.Publisher).Split([' ', '_', '-', '.', '(', ')', '[', ']'], StringSplitOptions.RemoveEmptyEntries))
         {
             string clean = word.Trim();
-            if (clean.Length >= 3 && !StopWords.Contains(clean) && !int.TryParse(clean, out _))
+            if (clean.Length >= 4 && !StopWords.Contains(clean) && !int.TryParse(clean, out _))
             {
                 if (!tokens.Contains(clean, StringComparer.OrdinalIgnoreCase))
                 {
@@ -77,13 +96,9 @@ public static class ProfileBuilder
             }
         }
 
-        // Extract Uninstall Key Name
-        string uninstallKeyName = app.Id;
-        int lastUnder = uninstallKeyName.IndexOf('_');
-        if (lastUnder >= 0)
-        {
-            uninstallKeyName = uninstallKeyName.Substring(lastUnder + 1);
-        }
+        string uninstallKeyName = !string.IsNullOrWhiteSpace(app.UninstallKeyName)
+            ? app.UninstallKeyName
+            : string.Empty;
 
         return new TargetProfile
         {
@@ -92,11 +107,22 @@ public static class ProfileBuilder
             InstallLocation = rawLoc,
             NormalizedLocation = rawLoc.ToLowerInvariant(),
             ShortLocation = shortLoc.ToLowerInvariant(),
+            SingleExecutableFile = singleExeFile,
             GuidString = guid,
             UninstallKeyName = uninstallKeyName,
             MainExeNames = exes,
             CleanTokens = tokens
         };
+    }
+
+    private static bool IsExcludedExeName(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)) return true;
+        if (fileName.StartsWith("unins", StringComparison.OrdinalIgnoreCase) ||
+            fileName.StartsWith("setup", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return GenericExecutableNames.Contains(fileName);
     }
 
     private static void ExtractExeName(string text, HashSet<string> set)
@@ -107,7 +133,7 @@ public static class ProfileBuilder
         {
             string candidate = text.Substring(0, exeIdx + 4).Trim('"', ' ', '\'');
             string fileName = Path.GetFileName(candidate);
-            if (!string.IsNullOrEmpty(fileName) && !fileName.StartsWith("unins", StringComparison.OrdinalIgnoreCase))
+            if (!IsExcludedExeName(fileName))
             {
                 set.Add(fileName);
             }

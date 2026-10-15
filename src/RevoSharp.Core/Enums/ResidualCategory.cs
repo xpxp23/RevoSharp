@@ -8,5 +8,8 @@ public enum ResidualCategory
     File,
     Shortcut,
     Service,
-    FirewallRule
+    FirewallRule,
+    ScheduledTask,
+    MsiMetadata,
+    ShellExtension
 }

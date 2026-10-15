@@ -7,6 +7,7 @@ public class TargetProfile
     public string InstallLocation { get; init; } = string.Empty;
     public string NormalizedLocation { get; init; } = string.Empty;
     public string ShortLocation { get; init; } = string.Empty;
+    public string SingleExecutableFile { get; init; } = string.Empty;
     public string GuidString { get; init; } = string.Empty;
     public string UninstallKeyName { get; init; } = string.Empty;
     public HashSet<string> MainExeNames { get; init; } = new(StringComparer.OrdinalIgnoreCase);

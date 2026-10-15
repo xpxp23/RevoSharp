@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+using Microsoft.Win32;
 using RevoSharp.Core.Models;
+using RevoSharp.Engine.Discovery;
 
 namespace RevoSharp.Engine.Execution;
 
@@ -13,11 +16,13 @@ public class UninstallerRunner
         "conhost.exe", "rundll32.exe", "dllhost.exe", "taskhostw.exe", "svchost.exe"
     };
 
+    private static readonly Regex MsiInstallFlagRegex = new(@"(?<=\s|^)[/-][iI](?=\s*\{|\s+"")", RegexOptions.Compiled);
+
     #region Toolhelp32 Interop
     private const uint TH32CS_SNAPPROCESS = 0x00000002;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-    private struct PROCESSENTRY32
+    public struct PROCESSENTRY32
     {
         public uint dwSize;
         public uint cntUsage;
@@ -52,7 +57,7 @@ public class UninstallerRunner
         CancellationToken cancellationToken)
     {
         string commandToRun;
-        string arguments = string.Empty;
+        string arguments;
 
         // 1. Determine command line
         if (!forceInteractive && !string.IsNullOrWhiteSpace(app.QuietUninstallString))
@@ -65,6 +70,13 @@ public class UninstallerRunner
 
             if (!forceInteractive)
             {
+                // For MSI packages, /I{GUID} must be converted to /X{GUID} before adding /qn,
+                // otherwise msiexec performs a silent repair/reinstall instead of uninstalling!
+                if (commandToRun.Contains("msiexec", StringComparison.OrdinalIgnoreCase))
+                {
+                    arguments = MsiInstallFlagRegex.Replace(arguments, "/X");
+                }
+
                 string smartArgs = InferSilentArguments(commandToRun, arguments);
                 if (!string.IsNullOrEmpty(smartArgs))
                 {
@@ -90,15 +102,31 @@ public class UninstallerRunner
                     Verb = "runas"
                 };
 
+                if (File.Exists(commandToRun))
+                {
+                    string? workDir = Path.GetDirectoryName(commandToRun);
+                    if (!string.IsNullOrEmpty(workDir) && Directory.Exists(workDir))
+                    {
+                        psi.WorkingDirectory = workDir;
+                    }
+                }
+
                 initialProcess = Process.Start(psi);
                 if (initialProcess == null) return false;
 
                 int initialPid = initialProcess.Id;
                 onStatusUpdate?.Invoke($"卸载引导进程已启动 (PID: {initialPid})");
 
-                // Track active process tree & target install directory
                 var activePids = new HashSet<int> { initialPid };
                 int zeroCountGrace = 0;
+
+                string? validInstallDirPrefix = null;
+                if (!string.IsNullOrWhiteSpace(app.InstallLocation) &&
+                    Directory.Exists(app.InstallLocation) &&
+                    !AppLocator.IsProtectedSharedDirectory(app.InstallLocation))
+                {
+                    validInstallDirPrefix = app.InstallLocation.TrimEnd('\\', '/') + "\\";
+                }
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
@@ -120,8 +148,8 @@ public class UninstallerRunner
                         }
                     }
 
-                    // 2. Detect any process running directly from app.InstallLocation
-                    if (!string.IsNullOrWhiteSpace(app.InstallLocation) && Directory.Exists(app.InstallLocation))
+                    // 2. Detect any process running directly from app.InstallLocation (with strict trailing slash boundary)
+                    if (!string.IsNullOrEmpty(validInstallDirPrefix))
                     {
                         foreach (var entry in snapshot)
                         {
@@ -133,17 +161,17 @@ public class UninstallerRunner
                                 using var p = Process.GetProcessById((int)entry.th32ProcessID);
                                 string? modulePath = p.MainModule?.FileName;
                                 if (!string.IsNullOrEmpty(modulePath) &&
-                                    modulePath.StartsWith(app.InstallLocation, StringComparison.OrdinalIgnoreCase))
+                                    modulePath.StartsWith(validInstallDirPrefix, StringComparison.OrdinalIgnoreCase))
                                 {
                                     activePids.Add((int)entry.th32ProcessID);
-                                    onStatusUpdate?.Invoke($"检测到安装目录运行中进程: {entry.szExeFile} (PID: {entry.th32ProcessID})");
+                                    onStatusUpdate?.Invoke($"检测到安装目录活动进程: {entry.szExeFile} (PID: {entry.th32ProcessID})");
                                 }
                             }
                             catch { }
                         }
                     }
 
-                    // 3. Filter out exited processes
+                    // 3. Filter out exited processes (properly disposing Process handles)
                     var stillRunning = new HashSet<int>();
                     var runningNames = new List<string>();
 
@@ -151,7 +179,7 @@ public class UninstallerRunner
                     {
                         try
                         {
-                            var p = Process.GetProcessById(pid);
+                            using var p = Process.GetProcessById(pid);
                             if (!p.HasExited)
                             {
                                 stillRunning.Add(pid);
@@ -170,15 +198,14 @@ public class UninstallerRunner
                     {
                         zeroCountGrace = 0;
                         string processListStr = string.Join(", ", runningNames.Take(3));
-                        onStatusUpdate?.Invoke($"等待卸载程序退出: {processListStr}");
+                        onStatusUpdate?.Invoke($"等待卸载程序完成: {processListStr}");
                     }
                     else
                     {
-                        // Grace period: Wait 1 second (2 checks) after 0 processes to ensure no secondary launcher is spawned
                         zeroCountGrace++;
                         if (zeroCountGrace >= 2)
                         {
-                            onStatusUpdate?.Invoke("所有卸载相关进程已正常退出。");
+                            onStatusUpdate?.Invoke("所有卸载相关进程已退出。");
                             break;
                         }
                     }
@@ -202,7 +229,71 @@ public class UninstallerRunner
         }, cancellationToken);
     }
 
-    private static List<PROCESSENTRY32> TakeProcessSnapshot()
+    /// <summary>
+    /// Checks whether the application's Registry Uninstall entry still exists (e.g., if user clicked Cancel in the wizard).
+    /// </summary>
+    public static bool IsAppRegistryEntryStillPresent(InstalledApp app)
+    {
+        if (string.IsNullOrWhiteSpace(app.RegistryKeyPath)) return false;
+
+        try
+        {
+            int slash = app.RegistryKeyPath.IndexOf('\\');
+            if (slash <= 0) return false;
+
+            string hiveStr = app.RegistryKeyPath.Substring(0, slash);
+            string subKey = app.RegistryKeyPath.Substring(slash + 1);
+
+            RegistryHive hive = hiveStr.ToUpperInvariant() switch
+            {
+                "HKLM" or "HKEY_LOCAL_MACHINE" => RegistryHive.LocalMachine,
+                "HKCU" or "HKEY_CURRENT_USER" => RegistryHive.CurrentUser,
+                _ => RegistryHive.LocalMachine
+            };
+
+            foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                try
+                {
+                    using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                    using var key = baseKey.OpenSubKey(subKey);
+                    if (key != null && key.GetValue("DisplayName") != null)
+                    {
+                        return true;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        return false;
+    }
+
+    public static List<int> GetDescendantPids(int rootPid)
+    {
+        var result = new HashSet<int> { rootPid };
+        var snapshot = TakeProcessSnapshot();
+        bool added;
+        do
+        {
+            added = false;
+            foreach (var entry in snapshot)
+            {
+                int pid = (int)entry.th32ProcessID;
+                int parentPid = (int)entry.th32ParentProcessID;
+                if (pid > 4 && result.Contains(parentPid) && !result.Contains(pid))
+                {
+                    result.Add(pid);
+                    added = true;
+                }
+            }
+        } while (added);
+
+        return result.ToList();
+    }
+
+    public static List<PROCESSENTRY32> TakeProcessSnapshot()
     {
         var list = new List<PROCESSENTRY32>();
         IntPtr handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -211,7 +302,7 @@ public class UninstallerRunner
         try
         {
             var pe = new PROCESSENTRY32();
-            pe.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+            pe.dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32>();
 
             if (Process32First(handle, ref pe))
             {
@@ -219,7 +310,7 @@ public class UninstallerRunner
                 {
                     list.Add(pe);
                     pe = new PROCESSENTRY32();
-                    pe.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+                    pe.dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32>();
                 }
                 while (Process32Next(handle, ref pe));
             }
@@ -232,7 +323,7 @@ public class UninstallerRunner
         return list;
     }
 
-    private static (string FileName, string Arguments) ParseCommand(string raw)
+    public static (string FileName, string Arguments) ParseCommand(string raw)
     {
         raw = raw.Trim();
         if (string.IsNullOrEmpty(raw)) return (string.Empty, string.Empty);
@@ -248,7 +339,9 @@ public class UninstallerRunner
             }
         }
 
-        if (raw.StartsWith("msiexec", StringComparison.OrdinalIgnoreCase))
+        if (raw.StartsWith("msiexec", StringComparison.OrdinalIgnoreCase) ||
+            raw.StartsWith("rundll32", StringComparison.OrdinalIgnoreCase) ||
+            raw.StartsWith("powershell", StringComparison.OrdinalIgnoreCase))
         {
             int spaceIdx = raw.IndexOf(' ');
             if (spaceIdx > 0)

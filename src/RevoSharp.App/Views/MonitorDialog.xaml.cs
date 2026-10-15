@@ -1,21 +1,40 @@
+using System.ComponentModel;
 using System.Windows;
 
 namespace RevoSharp.App.Views;
 
 public partial class MonitorDialog
 {
+    private bool _isSavedAndClosing;
+
     public MonitorDialog()
     {
         InitializeComponent();
+        Closing += OnWindowClosing;
+    }
+
+    private void OnWindowClosing(object? sender, CancelEventArgs e)
+    {
+        if (!_isSavedAndClosing && ViewModel.IsMonitoring)
+        {
+            var res = MessageBox.Show(
+                "当前正在监听安装过程，确定要中止监听并丢弃本次记录吗？",
+                "中止安装监控确认",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (res != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            ViewModel.CancelAndDispose();
+        }
     }
 
     private void OnCloseClick(object sender, RoutedEventArgs e)
     {
-        if (ViewModel.IsMonitoring)
-        {
-            var res = MessageBox.Show("当前正在监视安装过程，确定要取消并放弃本次记录吗？", "警告", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (res != MessageBoxResult.Yes) return;
-        }
         Close();
     }
 
@@ -23,6 +42,7 @@ public partial class MonitorDialog
     {
         await ViewModel.StopAndSaveAsync(() =>
         {
+            _isSavedAndClosing = true;
             Close();
         });
     }

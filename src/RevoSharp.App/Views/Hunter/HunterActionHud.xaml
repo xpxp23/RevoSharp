@@ -17,9 +17,11 @@
         <conv:BoolToVisibilityConverter x:Key="InverseBoolToVis" Invert="True" />
     </Window.Resources>
 
-    <Border Width="500"
-            Background="#F0181A1F"
-            BorderBrush="#0080FF"
+    <!-- Outer Margin="24" prevents the 24px DropShadowEffect from being clipped at window borders -->
+    <Border Width="510"
+            Margin="24"
+            Background="#F4181A20"
+            BorderBrush="#0088FF"
             BorderThickness="1.5"
             CornerRadius="12"
             Padding="18">
@@ -43,12 +45,14 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <!-- Icon -->
-                <Border Grid.Column="0" Width="48" Height="48" CornerRadius="8" Background="#33FFFFFF" Margin="0,0,12,0">
-                    <Image Source="{Binding AppIcon}" Width="36" Height="36" Stretch="Uniform" />
+                <Border Grid.Column="0" Width="48" Height="48" CornerRadius="10" Background="#28FFFFFF" Margin="0,0,12,0">
+                    <Grid>
+                        <ui:SymbolIcon Symbol="Apps24" FontSize="24" Foreground="#66FFFFFF"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Image Source="{Binding AppIcon}" Width="36" Height="36" Stretch="Uniform" />
+                    </Grid>
                 </Border>
 
-                <!-- Title & Meta -->
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="{Binding TargetInfo.WindowTitle}"
                                FontSize="16"
@@ -56,20 +60,19 @@
                                Foreground="White"
                                TextTrimming="CharacterEllipsis" />
 
-                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                        <Border Background="#330080FF" CornerRadius="4" Padding="6,1" Margin="0,0,6,0">
+                    <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                        <Border Background="#330080FF" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
                             <TextBlock Text="{Binding TargetInfo.ProcessName}" FontSize="11" Foreground="#80C0FF" />
                         </Border>
-                        <Border Background="#22FFFFFF" CornerRadius="4" Padding="6,1" Margin="0,0,6,0">
+                        <Border Background="#22FFFFFF" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
                             <TextBlock Text="{Binding TargetInfo.ProcessId, StringFormat='PID: {0}'}" FontSize="11" Foreground="#CCCCCC" />
                         </Border>
-                        <Border Background="#22FFFFFF" CornerRadius="4" Padding="6,1">
+                        <Border Background="#22FFFFFF" CornerRadius="4" Padding="6,2">
                             <TextBlock Text="{Binding TargetInfo.Architecture}" FontSize="11" Foreground="#CCCCCC" />
                         </Border>
                     </StackPanel>
                 </StackPanel>
 
-                <!-- Close Button -->
                 <ui:Button Grid.Column="2"
                            Icon="{ui:SymbolIcon Dismiss24}"
                            Appearance="Transparent"
@@ -78,28 +81,24 @@
             </Grid>
 
             <!-- 2. Badges & Path Details -->
-            <Border Grid.Row="1" Background="#18FFFFFF" CornerRadius="8" Padding="10" Margin="0,0,0,14">
+            <Border Grid.Row="1" Background="#16FFFFFF" CornerRadius="8" Padding="10" Margin="0,0,0,14">
                 <StackPanel>
                     <WrapPanel Margin="0,0,0,6">
-                        <!-- Protection badge -->
                         <Border Background="#44FF4444" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsSystemCritical, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="🛡️ 系统核心保护 (禁止破坏性操作)" FontSize="11" Foreground="#FFAAAA" FontWeight="SemiBold" />
                         </Border>
 
-                        <!-- Registered badge -->
                         <Border Background="#3344DD66" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsRegisteredApp, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="📦 已登记安装软件" FontSize="11" Foreground="#AAFFAA" />
                         </Border>
 
-                        <!-- Unregistered badge -->
                         <Border Background="#33FFAA00" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsRegisteredApp, Converter={StaticResource InverseBoolToVis}}">
-                            <TextBlock Text="⚡ 未登记独立/便携程序 (猎犬虚拟档案)" FontSize="11" Foreground="#FFEE88" />
+                            <TextBlock Text="⚡ 独立/便携程序 (已保护共享父目录)" FontSize="11" Foreground="#FFEE88" />
                         </Border>
 
-                        <!-- Autostart badge -->
                         <Border Background="#33AA88FF" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.HasAutostartEntry, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="{Binding TargetInfo.AutostartDescriptions.Count, StringFormat='🔄 驻留自启动项 ({0}处)'}" FontSize="11" Foreground="#DDAAFF" />
@@ -126,7 +125,6 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <!-- Action 1: Standard Uninstall -->
                 <ui:Button Grid.Row="0" Grid.Column="0"
                            Content="卸载并清理残留"
                            Icon="{ui:SymbolIcon Delete24}"
@@ -136,7 +134,6 @@
                            IsEnabled="{Binding CanUninstall}"
                            Command="{Binding UninstallCommand}" />
 
-                <!-- Action 2: Force Clean Residuals -->
                 <ui:Button Grid.Row="0" Grid.Column="1"
                            Content="强力终止并清除残留"
                            Icon="{ui:SymbolIcon Flash24}"
@@ -146,16 +143,14 @@
                            IsEnabled="{Binding CanForceClean}"
                            Command="{Binding ForceCleanCommand}" />
 
-                <!-- Action 3: Kill Process -->
                 <ui:Button Grid.Row="1" Grid.Column="0"
-                           Content="立即终止进程"
+                           Content="立即终止进程树"
                            Icon="{ui:SymbolIcon Stop24}"
                            HorizontalAlignment="Stretch"
                            Margin="0,0,4,8"
                            IsEnabled="{Binding CanKillProcess}"
                            Command="{Binding KillProcessCommand}" />
 
-                <!-- Action 4: Disable Autostart -->
                 <ui:Button Grid.Row="1" Grid.Column="1"
                            Content="终止并禁用自启动"
                            Icon="{ui:SymbolIcon DismissCircle24}"
@@ -164,7 +159,6 @@
                            IsEnabled="{Binding CanDisableAutostart}"
                            Command="{Binding DisableAutostartCommand}" />
 
-                <!-- Action 5: Open Location -->
                 <ui:Button Grid.Row="2" Grid.Column="0"
                            Content="打开所在目录"
                            Icon="{ui:SymbolIcon FolderOpen24}"
@@ -172,7 +166,6 @@
                            Margin="0,0,4,0"
                            Command="{Binding OpenLocationCommand}" />
 
-                <!-- Action 6: Web Search -->
                 <ui:Button Grid.Row="2" Grid.Column="1"
                            Content="进程安全情报搜索"
                            Icon="{ui:SymbolIcon GlobeSearch24}"
@@ -193,7 +186,8 @@
                            FontSize="12"
                            Foreground="#80C0FF"
                            VerticalAlignment="Center"
-                           TextTrimming="CharacterEllipsis" />
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding StatusMessage}" />
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <ui:Button Content="返回主界面"

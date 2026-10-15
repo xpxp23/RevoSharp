@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Win32;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Discovery;
 using RevoSharp.Engine.Execution;
@@ -28,6 +30,9 @@ public partial class MainViewModel : ObservableObject
     private string _searchText = string.Empty;
 
     [ObservableProperty]
+    private bool _includeWindowsApps;
+
+    [ObservableProperty]
     private bool _isLoading;
 
     [ObservableProperty]
@@ -43,16 +48,31 @@ public partial class MainViewModel : ObservableObject
         ApplyFilter();
     }
 
+    partial void OnIncludeWindowsAppsChanged(bool value)
+    {
+        _ = LoadAppsAsync();
+    }
+
     [RelayCommand]
     public async Task LoadAppsAsync()
     {
         IsLoading = true;
-        StatusText = "正在扫描系统已安装软件...";
+        StatusText = "正在扫描系统已安装软件与关联监控日志...";
         try
         {
-            _allApps = await _appLocator.GetInstalledAppsAsync();
+            string? previousSelectedId = SelectedApp?.Id;
+            _allApps = await _appLocator.GetInstalledAppsAsync(IncludeWindowsApps);
             ApplyFilter();
-            StatusText = $"共发现 {_allApps.Count} 款已安装程序";
+
+            if (previousSelectedId != null)
+            {
+                SelectedApp = Apps.FirstOrDefault(a => a.Id == previousSelectedId);
+            }
+
+            int tracedCount = _allApps.Count(a => a.HasTraceLog);
+            StatusText = tracedCount > 0
+                ? $"共发现 {_allApps.Count} 款程序（其中 {tracedCount} 款已关联 ETW 安装监控日志）"
+                : $"共发现 {_allApps.Count} 款已安装程序";
         }
         catch (Exception ex)
         {
@@ -75,7 +95,8 @@ public partial class MainViewModel : ObservableObject
             string query = SearchText.Trim();
             var filtered = _allApps.Where(a =>
                 a.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                a.Publisher.Contains(query, StringComparison.OrdinalIgnoreCase));
+                a.Publisher.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                a.DisplayVersion.Contains(query, StringComparison.OrdinalIgnoreCase));
             Apps = new ObservableCollection<InstalledApp>(filtered);
         }
     }
@@ -110,18 +131,57 @@ public partial class MainViewModel : ObservableObject
         }
         else
         {
-            StatusText = $"未检测到 {SelectedApp.DisplayName} 的物理安装目录（可能为免安装工具或注册表未记录有效路径）";
+            StatusText = $"未检测到【{SelectedApp.DisplayName}】的独立物理安装目录";
         }
+    }
+
+    [RelayCommand]
+    public void OpenRegistryKey()
+    {
+        if (SelectedApp == null || string.IsNullOrWhiteSpace(SelectedApp.RegistryKeyPath)) return;
+
+        try
+        {
+            int slash = SelectedApp.RegistryKeyPath.IndexOf('\\');
+            if (slash <= 0) return;
+
+            string hiveFull = SelectedApp.RegistryKeyPath.Substring(0, slash).ToUpperInvariant() switch
+            {
+                "HKLM" => "HKEY_LOCAL_MACHINE",
+                "HKCU" => "HKEY_CURRENT_USER",
+                _ => SelectedApp.RegistryKeyPath.Substring(0, slash)
+            };
+
+            string fullRegPath = $@"Computer\{hiveFull}{SelectedApp.RegistryKeyPath.Substring(slash)}";
+            using var regeditKey = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Applets\Regedit");
+            regeditKey?.SetValue("LastKey", fullRegPath);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "regedit.exe",
+                Arguments = "-m",
+                UseShellExecute = true
+            });
+            StatusText = $"已在注册表编辑器中定位: {SelectedApp.RegistryKeyPath}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"打开注册表失败: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    public void CopyUninstallString()
+    {
+        if (SelectedApp == null || string.IsNullOrWhiteSpace(SelectedApp.UninstallString)) return;
+        try
+        {
+            Clipboard.SetText(SelectedApp.UninstallString);
+            StatusText = $"已复制卸载命令: {SelectedApp.UninstallString}";
+        }
+        catch { }
     }
 
     public UninstallerRunner UninstallerRunner => _uninstallerRunner;
     public ResidualScanner ResidualScanner => _residualScanner;
-
-    public async Task<List<ResidualItem>> ScanResidualsAsync(InstalledApp app)
-    {
-        StatusText = $"正在深度扫描 {app.DisplayName} 注册表与文件残留...";
-        var residuals = await _residualScanner.ScanResidualsAsync(app);
-        StatusText = $"残留扫描完成，发现 {residuals.Count} 项残留";
-        return residuals;
-    }
 }

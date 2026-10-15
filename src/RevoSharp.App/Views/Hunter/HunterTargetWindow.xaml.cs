@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using RevoSharp.App.ViewModels;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Execution;
@@ -20,9 +21,15 @@ public partial class HunterTargetWindow : Window
 
     private readonly TargetHighlightOverlay _overlay;
     private bool _isAiming;
+    private bool _isClickThroughApplied;
     private Point _dragStartPoint;
     private HunterTargetInfo? _currentTarget;
     private HunterActionHud? _currentHud;
+
+    private const int GWL_EXSTYLE = -20;
+    private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const int WS_EX_TRANSPARENT = 0x00000020;
+    private const int WS_EX_LAYERED = 0x00080000;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT
@@ -33,6 +40,12 @@ public partial class HunterTargetWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
     public HunterTargetWindow(
         Window mainWindow,
@@ -52,35 +65,48 @@ public partial class HunterTargetWindow : Window
 
         _overlay = new TargetHighlightOverlay();
 
-        // Position at top-right of primary screen by default
-        double screenW = SystemParameters.PrimaryScreenWidth;
-        Left = screenW - 120;
-        Top = 80;
+        double screenW = SystemParameters.WorkArea.Width;
+        Left = screenW - 130;
+        Top = 60;
 
         Loaded += (s, e) =>
         {
-            // Set ToolWindow style so it doesn't show in Alt-Tab
-            var helper = new System.Windows.Interop.WindowInteropHelper(this);
-            SetWindowToolWindow(helper.Handle);
+            var helper = new WindowInteropHelper(this);
+            int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
+            SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
         };
     }
 
-    private static void SetWindowToolWindow(IntPtr hWnd)
+    private void SetClickThrough(bool enable)
     {
-        const int GWL_EXSTYLE = -20;
-        const int WS_EX_TOOLWINDOW = 0x00000080;
-        [DllImport("user32.dll")]
-        static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-        [DllImport("user32.dll")]
-        static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+        if (_isClickThroughApplied == enable) return;
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
 
-        int exStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
-        SetWindowLong(hWnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+        int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+        if (enable)
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW);
+        }
+        else
+        {
+            SetWindowLong(hwnd, GWL_EXSTYLE, (exStyle & ~WS_EX_TRANSPARENT) | WS_EX_TOOLWINDOW);
+        }
+        _isClickThroughApplied = enable;
     }
 
     protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseLeftButtonDown(e);
+
+        // Allow Shift + Left Drag to simply reposition the reticle without aiming
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            DragMove();
+            e.Handled = true;
+            return;
+        }
+
         _isAiming = true;
         _currentTarget = null;
         _dragStartPoint = e.GetPosition(this);
@@ -95,17 +121,17 @@ public partial class HunterTargetWindow : Window
         if (!_isAiming) return;
 
         GetCursorPos(out POINT pt);
-
-        // Check if mouse is still inside the target window (allow repositioning the widget)
         var posInWindow = e.GetPosition(this);
         double dist = Math.Sqrt(Math.Pow(posInWindow.X - _dragStartPoint.X, 2) + Math.Pow(posInWindow.Y - _dragStartPoint.Y, 2));
 
         if (e.LeftButton == MouseButtonState.Pressed && dist > 5)
         {
-            // Inspect window under cursor
+            // Enable WS_EX_TRANSPARENT while dragging so WindowFromPoint passes right through the reticle!
+            SetClickThrough(true);
+
             var target = _hunterService.InspectPoint(pt.X, pt.Y, _installedApps);
-            var thisHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-            var overlayHwnd = new System.Windows.Interop.WindowInteropHelper(_overlay).Handle;
+            var thisHwnd = new WindowInteropHelper(this).Handle;
+            var overlayHwnd = new WindowInteropHelper(_overlay).Handle;
 
             if (target != null && target.WindowHandle != thisHwnd && target.WindowHandle != overlayHwnd)
             {
@@ -118,12 +144,11 @@ public partial class HunterTargetWindow : Window
                 _overlay.Hide();
             }
 
-            // Follow cursor slightly or move widget
             var source = PresentationSource.FromVisual(this);
             double dpiX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
             double dpiY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
-            Left = (pt.X / dpiX) - 34;
-            Top = (pt.Y / dpiY) - 34;
+            Left = (pt.X / dpiX) - 48;
+            Top = (pt.Y / dpiY) - 48;
         }
     }
 
@@ -133,6 +158,7 @@ public partial class HunterTargetWindow : Window
 
         if (!_isAiming) return;
         _isAiming = false;
+        SetClickThrough(false);
         ReleaseMouseCapture();
         Cursor = Cursors.Hand;
         _overlay.Hide();
@@ -183,21 +209,14 @@ public partial class HunterTargetWindow : Window
 
     public void CloseHunterMode()
     {
+        SetClickThrough(false);
         _overlay.Close();
         _currentHud?.Close();
         Close();
     }
 
-    private void OnRestoreMainClick(object sender, RoutedEventArgs e)
-    {
-        RestoreMainWindow();
-    }
-
-    private void OnExitHunterClick(object sender, RoutedEventArgs e)
-    {
-        RestoreMainWindow();
-    }
-
+    private void OnRestoreMainClick(object sender, RoutedEventArgs e) => RestoreMainWindow();
+    private void OnExitHunterClick(object sender, RoutedEventArgs e) => RestoreMainWindow();
     private void OnOpacity100Click(object sender, RoutedEventArgs e) => Opacity = 1.0;
     private void OnOpacity75Click(object sender, RoutedEventArgs e) => Opacity = 0.75;
     private void OnOpacity50Click(object sender, RoutedEventArgs e) => Opacity = 0.5;

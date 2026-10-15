@@ -60,7 +60,7 @@ public partial class HunterActionHudViewModel : ObservableObject
 
         if (targetInfo.IsSystemCritical)
         {
-            StatusMessage = $"⚠️ {targetInfo.SystemProtectionReason}";
+            StatusMessage = $"🛡️ {targetInfo.SystemProtectionReason}";
         }
         else if (targetInfo.HasAutostartEntry)
         {
@@ -70,7 +70,9 @@ public partial class HunterActionHudViewModel : ObservableObject
         {
             StatusMessage = targetInfo.IsRegisteredApp
                 ? "已精准匹配系统已安装软件档案"
-                : "未在注册表安装列表登记（已生成流氓/便携程序专属猎犬档案）";
+                : (targetInfo.EffectiveApp.IsProtectedSingleFile
+                    ? "独立单文件程序（已启用所在共享文件夹保护）"
+                    : "未在注册表安装列表登记（已生成便携程序专属猎犬档案）");
         }
     }
 
@@ -85,14 +87,20 @@ public partial class HunterActionHudViewModel : ObservableObject
             IntPtr[] small = new IntPtr[1];
             if (ExtractIconEx(TargetInfo.ExecutablePath, 0, large, small, 1) > 0 && large[0] != IntPtr.Zero)
             {
-                var bs = Imaging.CreateBitmapSourceFromHIcon(
-                    large[0],
-                    Int32Rect.Empty,
-                    BitmapSizeOptions.FromEmptyOptions());
-                bs.Freeze();
-                AppIcon = bs;
-                DestroyIcon(large[0]);
-                if (small[0] != IntPtr.Zero) DestroyIcon(small[0]);
+                try
+                {
+                    var bs = Imaging.CreateBitmapSourceFromHIcon(
+                        large[0],
+                        Int32Rect.Empty,
+                        BitmapSizeOptions.FromEmptyOptions());
+                    bs.Freeze();
+                    AppIcon = bs;
+                }
+                finally
+                {
+                    DestroyIcon(large[0]);
+                    if (small[0] != IntPtr.Zero) DestroyIcon(small[0]);
+                }
             }
         }
         catch { }
@@ -142,16 +150,14 @@ public partial class HunterActionHudViewModel : ObservableObject
     {
         if (!CanForceClean) return;
         IsBusy = true;
-        StatusMessage = "正在强力终止进程树并执行全盘/注册表逆向扫描...";
+        StatusMessage = "正在强力终止进程树并执行深度逆向残留扫描...";
 
         try
         {
-            // 1. Kill process tree immediately
             _hunterService.KillProcessTree(TargetInfo.ProcessId);
 
-            // 2. Scan Residuals directly
             var app = TargetInfo.EffectiveApp;
-            StatusMessage = "正在逆向索引 CLSID、服务与目录残留...";
+            StatusMessage = "正在逆向索引 CLSID、服务、计划任务与目录残留...";
             var residuals = await _residualScanner.ScanResidualsAsync(app);
 
             RequestCloseAction?.Invoke();
@@ -172,15 +178,23 @@ public partial class HunterActionHudViewModel : ObservableObject
     {
         if (!CanKillProcess) return;
         bool ok = _hunterService.KillProcessTree(TargetInfo.ProcessId);
-        StatusMessage = ok ? $"✅ 已成功终止目标进程树 (PID: {TargetInfo.ProcessId})" : "终止进程失败（可能需要管理员权限或进程已退出）";
+        StatusMessage = ok
+            ? $"✅ 已成功终止目标进程树 (PID: {TargetInfo.ProcessId})"
+            : "终止进程失败（目标进程可能已退出）";
     }
 
     [RelayCommand]
     public void DisableAutostart()
     {
         if (!CanDisableAutostart) return;
+
+        // First terminate the active process tree, then backup & remove autostart entries
+        bool killed = _hunterService.KillProcessTree(TargetInfo.ProcessId);
         bool removed = _hunterService.DisableAutostart(TargetInfo);
-        StatusMessage = removed ? "✅ 已成功清除该目标的所有开机自启动驻留项" : "未发现或无法移除自启项";
+
+        StatusMessage = removed
+            ? (killed ? "✅ 已终止目标进程并安全备份清除所有自启动项" : "✅ 已安全备份并清除该目标的所有开机自启动项")
+            : "未发现或无法移除自启项";
         OnPropertyChanged(nameof(CanDisableAutostart));
     }
 
@@ -222,7 +236,7 @@ public partial class HunterActionHudViewModel : ObservableObject
     {
         try
         {
-            string query = Uri.EscapeDataString($"{TargetInfo.ProcessName} 安全性 进程分析");
+            string query = Uri.EscapeDataString($"{TargetInfo.ProcessName} {TargetInfo.Publisher} 进程安全性分析");
             string url = $"https://www.bing.com/search?q={query}";
             Process.Start(new ProcessStartInfo
             {

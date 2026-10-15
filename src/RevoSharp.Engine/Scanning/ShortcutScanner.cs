@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
 
@@ -14,7 +15,8 @@ public class ShortcutScanner
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
             Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu),
             Environment.GetFolderPath(Environment.SpecialFolder.Programs),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms)
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar")
         };
 
         dynamic? wshShell = null;
@@ -25,58 +27,82 @@ public class ShortcutScanner
             {
                 wshShell = Activator.CreateInstance(shellType);
             }
-        }
-        catch { }
 
-        if (wshShell == null) return;
+            if (wshShell == null) return;
 
-        foreach (var folder in foldersToCheck.Distinct())
-        {
-            if (!Directory.Exists(folder)) continue;
-
-            try
+            foreach (var folder in foldersToCheck.Where(f => !string.IsNullOrEmpty(f)).Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                foreach (var lnk in Directory.GetFiles(folder, "*.lnk", SearchOption.AllDirectories))
-                {
-                    try
-                    {
-                        dynamic shortcut = wshShell.CreateShortcut(lnk);
-                        string? targetPath = shortcut.TargetPath as string;
+                if (!Directory.Exists(folder)) continue;
 
-                        if (IsTargetMatch(targetPath, profile))
+                try
+                {
+                    foreach (var lnk in Directory.GetFiles(folder, "*.lnk", SearchOption.AllDirectories))
+                    {
+                        dynamic? shortcut = null;
+                        try
                         {
-                            if (!results.Any(r => r.Path.Equals(lnk, StringComparison.OrdinalIgnoreCase)))
+                            shortcut = wshShell.CreateShortcut(lnk);
+                            string? targetPath = shortcut?.TargetPath as string;
+
+                            if (IsTargetMatch(targetPath, profile))
                             {
-                                results.Add(new ResidualItem
+                                ResidualScanner.AddResidualIfUnique(results, new ResidualItem
                                 {
                                     Type = ResidualType.File,
+                                    Category = ResidualCategory.Shortcut,
                                     Path = lnk,
+                                    SizeInBytes = ResidualScanner.CalculatePathSize(lnk, isDirectory: false),
                                     Confidence = ConfidenceLevel.High,
                                     Reason = "快捷方式死链 (指向已卸载程序目标)",
                                     IsSelected = true
                                 });
                             }
                         }
+                        catch { }
+                        finally
+                        {
+                            if (shortcut != null && Marshal.IsComObject(shortcut))
+                            {
+                                Marshal.FinalReleaseComObject(shortcut);
+                            }
+                        }
                     }
-                    catch { }
                 }
+                catch { }
             }
-            catch { }
+        }
+        catch { }
+        finally
+        {
+            if (wshShell != null && Marshal.IsComObject(wshShell))
+            {
+                Marshal.FinalReleaseComObject(wshShell);
+            }
         }
     }
 
     private static bool IsTargetMatch(string? targetPath, TargetProfile profile)
     {
         if (string.IsNullOrWhiteSpace(targetPath)) return false;
-        string lower = targetPath.ToLowerInvariant();
+        string lower = targetPath.ToLowerInvariant().Trim('"', ' ');
 
-        if (profile.HasValidLocation && lower.StartsWith(profile.NormalizedLocation))
+        if (profile.HasValidLocation)
+        {
+            string prefix = profile.NormalizedLocation.TrimEnd('\\') + "\\";
+            if (lower.StartsWith(prefix) || lower.Equals(profile.NormalizedLocation))
+            {
+                return true;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(profile.SingleExecutableFile) &&
+            lower.Equals(profile.SingleExecutableFile, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
         string fileName = Path.GetFileName(lower);
-        if (profile.MainExeNames.Contains(fileName))
+        if (profile.MainExeNames.Contains(fileName) && !lower.Contains(@"\windows\"))
         {
             return true;
         }

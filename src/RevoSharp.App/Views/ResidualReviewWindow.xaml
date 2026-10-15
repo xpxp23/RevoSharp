@@ -6,15 +6,53 @@
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
-        Title="深度残留审查与一键清理"
-        Height="720" Width="1100"
-        MinHeight="500" MinWidth="800"
+        Title="深度残留审查与一键安全清理"
+        Height="740" Width="1140"
+        MinHeight="520" MinWidth="860"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
 
     <ui:FluentWindow.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:CountToVisibilityConverter x:Key="EmptyCountToVis" Invert="True" />
+
+        <!-- Modern Segmented Pill Style for Category RadioButtons -->
+        <Style x:Key="SegmentedFilterRadioStyle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+            <Setter Property="Background" Value="#14FFFFFF" />
+            <Setter Property="BorderBrush" Value="#22FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="12,5" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="PillBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="PillBorder" Property="Background" Value="#26FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="PillBorder" Property="Background" Value="#3A0080FF" />
+                                <Setter TargetName="PillBorder" Property="BorderBrush" Value="#0088FF" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </ui:FluentWindow.Resources>
 
     <Grid>
@@ -27,7 +65,7 @@
 
         <!-- 1. TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="RevoSharp 深度残留清理"
+                     Title="RevoSharp 深度残留审查与多级安全备份"
                      ShowMaximize="True"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Broom24}" />
@@ -40,29 +78,40 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <!-- Row 0: App Name & Category Segmented Buttons -->
+                <!-- Row 0: App Name & Category Segmented Pills -->
                 <Grid Grid.Row="0" Margin="0,0,0,10">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock x:Name="AppNameTextBlock" Text="程序残留全景清单" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,16,0" />
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                        <!-- Category Filters -->
+                    <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+                        <TextBlock x:Name="AppNameTextBlock" Text="程序残留全景清单" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,14,0" />
+
                         <RadioButton Content="{Binding TotalCount, StringFormat='全部 ({0})'}" IsChecked="True"
-                                     GroupName="CatFilter" Tag="全部" Checked="OnCategoryFilterChecked" Margin="0,0,6,0" />
+                                     Style="{StaticResource SegmentedFilterRadioStyle}"
+                                     GroupName="CatFilter" Tag="全部" Checked="OnCategoryFilterChecked" />
                         <RadioButton Content="{Binding RegCount, StringFormat='注册表 ({0})'}"
-                                     GroupName="CatFilter" Tag="注册表" Checked="OnCategoryFilterChecked" Margin="0,0,6,0" />
+                                     Style="{StaticResource SegmentedFilterRadioStyle}"
+                                     GroupName="CatFilter" Tag="注册表" Checked="OnCategoryFilterChecked" />
                         <RadioButton Content="{Binding FileCount, StringFormat='文件与目录 ({0})'}"
-                                     GroupName="CatFilter" Tag="文件与目录" Checked="OnCategoryFilterChecked" Margin="0,0,6,0" />
+                                     Style="{StaticResource SegmentedFilterRadioStyle}"
+                                     GroupName="CatFilter" Tag="文件与目录" Checked="OnCategoryFilterChecked" />
                         <RadioButton Content="{Binding ShortcutCount, StringFormat='快捷方式 ({0})'}"
+                                     Style="{StaticResource SegmentedFilterRadioStyle}"
                                      GroupName="CatFilter" Tag="快捷方式" Checked="OnCategoryFilterChecked" />
-                    </StackPanel>
+                        <RadioButton Content="{Binding ServiceAndTaskCount, StringFormat='服务与任务 ({0})'}"
+                                     Style="{StaticResource SegmentedFilterRadioStyle}"
+                                     GroupName="CatFilter" Tag="服务与任务" Checked="OnCategoryFilterChecked" />
+                    </WrapPanel>
 
                     <!-- Scan Mode & Rescan -->
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <TextBlock Text="扫描级别:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
-                        <ComboBox x:Name="ScanModeComboBox" SelectedIndex="1" Width="110" Margin="0,0,8,0" SelectionChanged="OnScanModeChanged">
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="扫描深度:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
+                        <ComboBox x:Name="ScanModeComboBox" SelectedIndex="1" Width="125" Margin="0,0,8,0" SelectionChanged="OnScanModeChanged">
                             <ComboBoxItem Content="安全 (Safe)" />
                             <ComboBoxItem Content="中等 (推荐)" />
-                            <ComboBoxItem Content="高级 (深度)" />
+                            <ComboBoxItem Content="高级 (深度特征)" />
                         </ComboBox>
                         <ui:Button Content="重新扫描" Icon="{ui:SymbolIcon ArrowClockwise24}" Command="{Binding ExecuteScanCommand}" />
                     </StackPanel>
@@ -71,62 +120,125 @@
                 <!-- Row 1: Search Filter & Batch Select -->
                 <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="340" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
                     <ui:TextBox Grid.Column="0"
-                                PlaceholderText="过滤路径或关键词..."
+                                PlaceholderText="过滤路径、键值名称或命中原因..."
                                 Text="{Binding PathFilterText, UpdateSourceTrigger=PropertyChanged}"
                                 Icon="{ui:SymbolIcon Search24}"
                                 ClearButtonEnabled="True" />
 
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <ui:Button Content="仅选推荐 (高置信度)" Icon="{ui:SymbolIcon Checkmark24}" Appearance="Primary" Command="{Binding SelectHighOnlyCommand}" Margin="0,0,6,0" />
-                        <ui:Button Content="全选" Command="{Binding SelectAllCommand}" Margin="0,0,6,0" />
+                        <ui:Button Content="仅选高置信度 (推荐)" Icon="{ui:SymbolIcon Checkmark24}" Appearance="Primary" Command="{Binding SelectHighOnlyCommand}" Margin="0,0,6,0" />
+                        <ui:Button Content="全选当前" Command="{Binding SelectAllCommand}" Margin="0,0,6,0" />
                         <ui:Button Content="全不选" Command="{Binding DeselectAllCommand}" />
                     </StackPanel>
                 </Grid>
             </Grid>
         </Border>
 
-        <!-- 3. Central Flat Direct List (0 Level, Instant View) -->
+        <!-- 3. Central Flat Direct List with Badges & ContextMenu -->
         <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,10" CornerRadius="8" Padding="2">
             <Grid>
                 <ui:DataGrid ItemsSource="{Binding DisplayedResiduals}"
+                             SelectedItem="{Binding SelectedResidual}"
                              AutoGenerateColumns="False"
                              CanUserAddRows="False"
                              CanUserDeleteRows="False"
                              SelectionMode="Single"
                              GridLinesVisibility="Horizontal"
                              HeadersVisibility="Column">
+                    <ui:DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="打开所在文件夹 / 定位位置" Command="{Binding OpenItemLocationCommand}" />
+                            <MenuItem Header="在注册表编辑器 (RegEdit) 中打开" Command="{Binding OpenInRegEditCommand}" />
+                            <Separator />
+                            <MenuItem Header="复制完整路径与键值" Command="{Binding CopyPathCommand}" />
+                        </ContextMenu>
+                    </ui:DataGrid.ContextMenu>
+
                     <DataGrid.Columns>
-                        <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" Width="50" />
-                        <DataGridTextColumn Header="类别" Binding="{Binding Type}" Width="100" IsReadOnly="True" />
-                        <DataGridTextColumn Header="置信度" Binding="{Binding ConfidenceDisplay}" Width="120" IsReadOnly="True" />
-                        <DataGridTextColumn Header="完整残留路径 / 注册表项" Binding="{Binding Path}" Width="*" IsReadOnly="True" />
-                        <DataGridTextColumn Header="判定原因" Binding="{Binding Reason}" Width="200" IsReadOnly="True" />
+                        <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" Width="54" />
+
+                        <DataGridTemplateColumn Header="类别" Width="110" SortMemberPath="TypeDisplay" IsReadOnly="True">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border Background="#220088FF" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding TypeDisplay}" FontSize="11" Foreground="#88CCFF" />
+                                    </Border>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTemplateColumn Header="置信度" Width="125" SortMemberPath="Confidence" IsReadOnly="True">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Grid VerticalAlignment="Center">
+                                        <ui:Badge Content="{Binding ConfidenceDisplay}" Appearance="Success"
+                                                  Visibility="{Binding IsHighConfidence, Converter={StaticResource BoolToVis}}" />
+                                        <ui:Badge Content="{Binding ConfidenceDisplay}" Appearance="Caution"
+                                                  Visibility="{Binding IsMediumConfidence, Converter={StaticResource BoolToVis}}" />
+                                        <ui:Badge Content="{Binding ConfidenceDisplay}" Appearance="Danger"
+                                                  Visibility="{Binding IsLowConfidence, Converter={StaticResource BoolToVis}}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTextColumn Header="完整残留路径 / 注册表键与值名称" Binding="{Binding FullDisplayPath}" Width="*" MinWidth="320" IsReadOnly="True" />
+
+                        <DataGridTextColumn Header="大小" Binding="{Binding FormattedSize}" SortMemberPath="SizeInBytes" Width="90" IsReadOnly="True" />
+
+                        <DataGridTextColumn Header="命中原因" Binding="{Binding Reason}" Width="220" IsReadOnly="True" />
                     </DataGrid.Columns>
                 </ui:DataGrid>
 
-                <!-- Loading Overlay -->
+                <!-- Empty State Overlay -->
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
-                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-                    <ui:ProgressRing Width="50" Height="50" IsIndeterminate="True" HorizontalAlignment="Center" Margin="0,0,0,10" />
-                    <TextBlock Text="正在处理中，请稍候..." Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                            IsHitTestVisible="False"
+                            Visibility="{Binding DisplayedResiduals.Count, Converter={StaticResource EmptyCountToVis}}">
+                    <ui:SymbolIcon Symbol="CheckmarkCircle24" FontSize="42" Foreground="#44DD88" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                    <TextBlock Text="当前筛选条件下未发现残留项" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="原厂卸载程序已清理干净，或可切换至“高级 (深度特征)”级别重新扫描" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
                 </StackPanel>
+
+                <!-- Loading Overlay -->
+                <Border Background="#AA121418" CornerRadius="8"
+                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <ui:ProgressRing Width="48" Height="48" IsIndeterminate="True" HorizontalAlignment="Center" Margin="0,0,0,10" />
+                        <TextBlock Text="{Binding StatusMessage}" Foreground="White" FontSize="13" HorizontalAlignment="Center" />
+                    </StackPanel>
+                </Border>
             </Grid>
         </Border>
 
-        <!-- 4. Footer Clean Action Bar (0 Popup, Auto Flow) -->
+        <!-- 4. Footer Clean Action Bar with Multi-Level Safety Options -->
         <Border Grid.Row="3" Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" Padding="16,10">
             <Grid>
-                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
 
-                <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusMessage}" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,16,0">
+                    <CheckBox Content="创建系统还原点" IsChecked="{Binding CreateRestorePoint}" Margin="0,0,12,0" FontSize="12"
+                              ToolTip="清理前调用 WMI 创建 Windows 系统还原点" />
+                    <CheckBox Content="占用文件重启后删除" IsChecked="{Binding ScheduleLockedOnReboot}" FontSize="12"
+                              ToolTip="若残留文件被后台进程占用无法移入回收站，则自动注册在下次重启时由系统内核删除" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
                     <ui:Button Content="放弃并关闭" Margin="0,0,10,0" Click="OnCancelClick" />
-                    <ui:Button Content="一键安全清除所选并完成"
+                    <ui:Button Content="安全备份并清除所选"
                                Icon="{ui:SymbolIcon Checkmark24}"
                                Appearance="Primary"
                                Click="OnCleanAllClick" />

@@ -10,11 +10,24 @@ public partial class ResidualReviewWindow
 {
     public ResidualReviewViewModel ViewModel { get; }
 
-    public ResidualReviewWindow(InstalledApp app, List<ResidualItem>? initialResiduals = null)
+    public ResidualReviewWindow(
+        InstalledApp app,
+        List<ResidualItem>? initialResiduals = null,
+        ScanMode initialScanMode = ScanMode.Moderate)
     {
         InitializeComponent();
-        ViewModel = new ResidualReviewViewModel(app, initialResiduals);
+        ViewModel = new ResidualReviewViewModel(app, initialResiduals)
+        {
+            CurrentScanMode = initialScanMode
+        };
         DataContext = ViewModel;
+
+        ScanModeComboBox.SelectedIndex = initialScanMode switch
+        {
+            ScanMode.Safe => 0,
+            ScanMode.Advanced => 2,
+            _ => 1
+        };
 
         AppNameTextBlock.Text = $"【{app.DisplayName}】深度残留清单";
         Loaded += async (s, e) => await ViewModel.InitializeScanAsync();
@@ -22,7 +35,7 @@ public partial class ResidualReviewWindow
 
     private void OnCategoryFilterChecked(object sender, RoutedEventArgs e)
     {
-        if (sender is RadioButton rb && rb.Tag is string cat)
+        if (sender is RadioButton rb && rb.Tag is string cat && ViewModel != null)
         {
             ViewModel.SelectedCategory = cat;
         }
@@ -30,7 +43,7 @@ public partial class ResidualReviewWindow
 
     private void OnScanModeChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (IsLoaded && ScanModeComboBox != null)
+        if (IsLoaded && ScanModeComboBox != null && ViewModel != null)
         {
             ViewModel.CurrentScanMode = ScanModeComboBox.SelectedIndex switch
             {
@@ -44,7 +57,6 @@ public partial class ResidualReviewWindow
 
     private async void OnCleanAllClick(object sender, RoutedEventArgs e)
     {
-        // Zero modal popup! Directly execute silent backup + delete and auto-close!
         await ViewModel.CleanAllSelectedSilentAsync(() =>
         {
             Close();

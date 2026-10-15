@@ -7,9 +7,9 @@
         xmlns:vm="clr-namespace:RevoSharp.App.ViewModels"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
-        Title="RevoSharp - 深度卸载与实时安装监控"
-        Height="720" Width="1100"
-        MinHeight="500" MinWidth="800"
+        Title="RevoSharp - 现代软件深度卸载与内核安装监控"
+        Height="740" Width="1180"
+        MinHeight="520" MinWidth="880"
         WindowStartupLocation="CenterScreen"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -18,6 +18,8 @@
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
         <conv:NullToBoolConverter x:Key="NullToBool" />
+        <conv:CountToVisibilityConverter x:Key="EmptyCountToVis" Invert="True" />
+        <conv:AppIconConverter x:Key="AppIconConv" />
     </ui:FluentWindow.Resources>
 
     <ui:FluentWindow.DataContext>
@@ -39,7 +41,9 @@
                      ShowMinimize="True"
                      Icon="{ui:SymbolIcon Shield24}">
             <ui:TitleBar.Header>
-                <TextBlock Text="现代软件深度卸载与内核安装监控" Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
+                <TextBlock Text="现代软件深度逆向卸载、猎犬模式与 ETW 内核安装监控"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
             </ui:TitleBar.Header>
         </ui:TitleBar>
 
@@ -47,79 +51,150 @@
         <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Padding="16,12" Margin="16,0,16,12" CornerRadius="8">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="280" />
+                    <ColumnDefinition Width="260" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <!-- Search Box -->
                 <ui:TextBox Grid.Column="0"
-                            PlaceholderText="搜索已安装程序或厂商..."
+                            PlaceholderText="搜索软件名称、发行商或版本..."
                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                             Icon="{ui:SymbolIcon Search24}"
                             ClearButtonEnabled="True" />
 
-                <!-- Action Buttons -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal">
-                    <ui:Button Content="监视新安装"
-                               Icon="{ui:SymbolIcon Record24}"
-                               Appearance="Primary"
-                               Margin="0,0,8,0"
-                               Click="OnMonitorInstallClick" />
+                <!-- Include Windows Store Apps Toggle -->
+                <CheckBox Grid.Column="1"
+                          Content="含商店应用"
+                          IsChecked="{Binding IncludeWindowsApps}"
+                          VerticalAlignment="Center"
+                          Margin="12,0,0,0"
+                          FontSize="12"
+                          ToolTip="同时扫描并展示 Windows 现代商店应用 (UWP / MSIX)" />
 
-                    <ui:Button Content="卸载并清理残留"
+                <!-- Action Buttons -->
+                <WrapPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                    <ui:Button Content="卸载并清残留"
                                Icon="{ui:SymbolIcon Delete24}"
                                Appearance="Danger"
-                               Margin="0,0,8,0"
+                               Margin="0,0,6,0"
                                IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
-                               Click="OnUninstallClick" />
+                               Click="OnUninstallClick"
+                               ToolTip="支持单选或多选批量队列卸载：运行原厂卸载器后执行深度逆向残留扫描" />
 
-                    <ui:Button Content="静默快速卸载"
+                    <ui:Button Content="静默快卸"
                                Icon="{ui:SymbolIcon Flash24}"
-                               Margin="0,0,8,0"
+                               Margin="0,0,6,0"
                                IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
-                               Click="OnQuickUninstallClick" />
+                               Click="OnQuickUninstallClick"
+                               ToolTip="自动转换 MSI /X /qn 或安装包静默参数极速卸载（支持多选批量队列）" />
 
-                    <ui:Button Content="打开目录"
-                               Icon="{ui:SymbolIcon FolderOpen24}"
-                               Margin="0,0,8,0"
-                               Command="{Binding OpenLocationCommand}"
-                               IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}" />
+                    <ui:Button Content="强制卸载向导"
+                               Icon="{ui:SymbolIcon Wrench24}"
+                               Margin="0,0,6,0"
+                               Click="OnForcedUninstallClick"
+                               ToolTip="针对已卸载但遗留残余、卸载器损坏或未登记的软件按名称/路径强制猎杀残留" />
+
+                    <ui:Button Content="监视安装"
+                               Icon="{ui:SymbolIcon Record24}"
+                               Appearance="Primary"
+                               Margin="0,0,6,0"
+                               Click="OnMonitorInstallClick"
+                               ToolTip="启动 ETW 内核追踪与注册表快照差分，精准记录新安装软件的一举一动" />
 
                     <ui:Button Content="猎犬模式"
                                Icon="{ui:SymbolIcon Target24}"
                                Appearance="Primary"
-                               Margin="0,0,8,0"
+                               Margin="0,0,6,0"
                                Click="OnHunterModeClick"
-                               ToolTip="进入猎犬准星模式，拖拽瞄准屏幕任意弹窗、桌面图标或未知进程" />
+                               ToolTip="进入桌面准星猎杀模式，拖拽瞄准任意窗口或流氓弹窗" />
 
-                    <ui:Button Content="刷新列表"
-                               Icon="{ui:SymbolIcon ArrowClockwise24}"
-                               Command="{Binding LoadAppsCommand}" />
-                </StackPanel>
+                    <ui:Button Content="工具与备份"
+                               Icon="{ui:SymbolIcon Apps24}"
+                               Margin="0,0,6,0"
+                               Click="OnToolkitClick"
+                               ToolTip="开机自启动管理器、注册表多级备份一键还原中心与安装追踪日志库" />
+
+                    <ui:Button Icon="{ui:SymbolIcon ArrowClockwise24}"
+                               Command="{Binding LoadAppsCommand}"
+                               ToolTip="刷新已安装软件列表" />
+                </WrapPanel>
             </Grid>
         </Border>
 
         <!-- 3. Installed Apps DataGrid -->
         <Border Grid.Row="2" Margin="16,0,16,12" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="2">
             <Grid>
-                <ui:DataGrid ItemsSource="{Binding Apps}"
+                <ui:DataGrid x:Name="AppsDataGrid"
+                             ItemsSource="{Binding Apps}"
                              SelectedItem="{Binding SelectedApp}"
                              AutoGenerateColumns="False"
                              CanUserAddRows="False"
                              CanUserDeleteRows="False"
                              IsReadOnly="True"
-                             SelectionMode="Single"
+                             SelectionMode="Extended"
                              GridLinesVisibility="Horizontal"
-                             HeadersVisibility="Column">
+                             HeadersVisibility="Column"
+                             MouseDoubleClick="OnDataGridDoubleClick">
+                    <ui:DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="卸载并清理残留 (支持多选队列)" Click="OnUninstallClick" />
+                            <MenuItem Header="静默快速卸载 (支持多选队列)" Click="OnQuickUninstallClick" />
+                            <MenuItem Header="仅深度扫描残留 (跳过原厂卸载程序)" Click="OnDirectScanResidualsClick" />
+                            <Separator />
+                            <MenuItem Header="打开安装所在目录" Command="{Binding OpenLocationCommand}" />
+                            <MenuItem Header="在注册表编辑器 (RegEdit) 中定位" Command="{Binding OpenRegistryKeyCommand}" />
+                            <MenuItem Header="复制原厂卸载命令行" Command="{Binding CopyUninstallStringCommand}" />
+                        </ContextMenu>
+                    </ui:DataGrid.ContextMenu>
+
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="软件名称" Binding="{Binding DisplayName}" Width="280" />
-                        <DataGridTextColumn Header="版本" Binding="{Binding DisplayVersion}" Width="120" />
-                        <DataGridTextColumn Header="发行商" Binding="{Binding Publisher}" Width="200" />
-                        <DataGridTextColumn Header="大小" Binding="{Binding FormattedSize}" Width="90" />
-                        <DataGridTextColumn Header="安装日期" Binding="{Binding InstallDate}" Width="110" />
-                        <DataGridTextColumn Header="架构" Binding="{Binding Architecture}" Width="80" />
-                        <DataGridTemplateColumn Header="安装监视日志" Width="120">
+                        <!-- App Icon + Name (* Star Width fills window cleanly) -->
+                        <DataGridTemplateColumn Header="软件名称" Width="*" MinWidth="260" SortMemberPath="DisplayName">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="4,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="28" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <Border Grid.Column="0" Width="22" Height="22" CornerRadius="4" Background="#18FFFFFF" VerticalAlignment="Center">
+                                            <Grid>
+                                                <ui:SymbolIcon Symbol="Apps24" FontSize="14" Foreground="#66FFFFFF"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                <Image Source="{Binding ., Converter={StaticResource AppIconConv}}"
+                                                       Width="18" Height="18" Stretch="Uniform" />
+                                            </Grid>
+                                        </Border>
+
+                                        <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                                   FontWeight="SemiBold" VerticalAlignment="Center"
+                                                   Margin="8,0,6,0" TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding DisplayName}" />
+
+                                        <Border Grid.Column="2" Background="#280088FF" CornerRadius="4" Padding="5,1"
+                                                VerticalAlignment="Center" Margin="0,0,4,0"
+                                                Visibility="{Binding IsWindowsApp, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="UWP" FontSize="10" Foreground="#88CCFF" />
+                                        </Border>
+                                    </Grid>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <DataGridTextColumn Header="版本" Binding="{Binding DisplayVersion}" Width="125" />
+                        <DataGridTextColumn Header="发行商" Binding="{Binding PublisherDisplay}" Width="190" />
+
+                        <!-- Numeric sorting via SortMemberPath="EstimatedSizeInBytes" -->
+                        <DataGridTextColumn Header="估计大小" Binding="{Binding FormattedSize}" SortMemberPath="EstimatedSizeInBytes" Width="95" />
+
+                        <DataGridTextColumn Header="安装日期" Binding="{Binding InstallDate}" Width="105" />
+                        <DataGridTextColumn Header="架构" Binding="{Binding Architecture}" Width="75" />
+
+                        <DataGridTemplateColumn Header="安装监控日志" Width="115" SortMemberPath="HasTraceLog">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -132,9 +207,18 @@
                     </DataGrid.Columns>
                 </ui:DataGrid>
 
+                <!-- Empty State Overlay -->
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                            IsHitTestVisible="False"
+                            Visibility="{Binding Apps.Count, Converter={StaticResource EmptyCountToVis}}">
+                    <ui:SymbolIcon Symbol="Search24" FontSize="40" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                    <TextBlock Text="未找到匹配的已安装程序" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="如需清理已卸载软件的遗留垃圾，请点击上方「强制卸载向导」" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                </StackPanel>
+
                 <!-- Loading Overlay -->
                 <ui:ProgressRing IsIndeterminate="True"
-                                 Width="60" Height="60"
+                                 Width="56" Height="56"
                                  HorizontalAlignment="Center"
                                  VerticalAlignment="Center"
                                  Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}" />
@@ -146,7 +230,7 @@
             <Grid>
                 <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
                 <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="12"
-                           Text="RevoSharp v1.0.0 | .NET 8 (x64) | ETW Kernel Engine" />
+                           Text="RevoSharp v2.0 Pro | .NET 8 (x64) | ETW Kernel &amp; Reverse Reference Engine" />
             </Grid>
         </Border>
     </Grid>

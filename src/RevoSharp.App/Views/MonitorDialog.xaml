@@ -8,8 +8,8 @@
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
         Title="实时安装监控向导"
-        Height="580" Width="800"
-        MinHeight="450" MinWidth="600"
+        Height="600" Width="820"
+        MinHeight="460" MinWidth="640"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -17,6 +17,7 @@
     <ui:FluentWindow.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+        <conv:InverseBoolConverter x:Key="InvBool" />
     </ui:FluentWindow.Resources>
 
     <ui:FluentWindow.DataContext>
@@ -33,12 +34,12 @@
 
         <!-- 1. TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="实时安装监控向导 (ETW 内核级追踪)"
+                     Title="实时安装监控向导 (ETW 内核级追踪 + 注册表差分)"
                      ShowMaximize="False"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Record24}" />
 
-        <!-- 2. Configuration Card -->
+        <!-- 2. Configuration Card (Fixed IsEnabled binding with InverseBoolConverter) -->
         <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,12" Padding="16,12" CornerRadius="8">
             <StackPanel>
                 <Grid Margin="0,0,0,8">
@@ -49,25 +50,25 @@
                     <ui:TextBox Grid.Column="0"
                                 PlaceholderText="请选择或粘贴安装包路径 (.exe / .msi)..."
                                 Text="{Binding InstallerPath, UpdateSourceTrigger=PropertyChanged}"
-                                IsEnabled="{Binding IsMonitoring, Converter={StaticResource InvBoolToVis}}"
+                                IsEnabled="{Binding IsMonitoring, Converter={StaticResource InvBool}}"
                                 Margin="0,0,8,0" />
                     <ui:Button Grid.Column="1"
-                               Content="浏览..."
+                               Content="浏览安装包..."
                                Icon="{ui:SymbolIcon FolderOpen24}"
                                Command="{Binding BrowseInstallerCommand}"
-                               IsEnabled="{Binding IsMonitoring, Converter={StaticResource InvBoolToVis}}" />
+                               IsEnabled="{Binding IsMonitoring, Converter={StaticResource InvBool}}" />
                 </Grid>
 
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="130" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="程序识别名称：" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                     <ui:TextBox Grid.Column="1"
                                 Text="{Binding AppName, UpdateSourceTrigger=PropertyChanged}"
-                                PlaceholderText="例如：Google Chrome"
-                                IsEnabled="{Binding IsMonitoring, Converter={StaticResource InvBoolToVis}}" />
+                                PlaceholderText="留空或自定义，安装完成后将自动匹配注册表新增软件名"
+                                IsEnabled="{Binding IsMonitoring, Converter={StaticResource InvBool}}" />
                 </Grid>
             </StackPanel>
         </Border>
@@ -83,16 +84,16 @@
                 <!-- Statistics Bar -->
                 <Grid Grid.Row="0" Margin="0,0,0,12">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="已捕获文件变动：" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <ui:Badge Content="{Binding CapturedFiles}" Appearance="Primary" Margin="4,0,24,0" />
+                        <TextBlock Text="已捕获新建/写入文件：" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <ui:Badge Content="{Binding CapturedFiles}" Appearance="Primary" Margin="6,0,24,0" />
 
-                        <TextBlock Text="已捕获注册表变动：" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <ui:Badge Content="{Binding CapturedRegistry}" Appearance="Success" Margin="4,0,0,0" />
+                        <TextBlock Text="已捕获新建注册表项：" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <ui:Badge Content="{Binding CapturedRegistry}" Appearance="Success" Margin="6,0,0,0" />
                     </StackPanel>
 
                     <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Visibility="{Binding IsMonitoring, Converter={StaticResource BoolToVis}}">
-                        <ui:ProgressRing Width="20" Height="20" IsIndeterminate="True" Margin="0,0,8,0" />
-                        <TextBlock Text="ETW 内核监听中..." Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" FontSize="12" />
+                        <ui:ProgressRing Width="18" Height="18" IsIndeterminate="True" Margin="0,0,8,0" />
+                        <TextBlock Text="ETW 内核会话监听中 (已自动过滤系统只读文件)..." Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" FontSize="12" />
                     </StackPanel>
                 </Grid>
 
@@ -109,19 +110,24 @@
         <!-- 4. Footer Actions -->
         <Border Grid.Row="3" Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" Padding="16,12">
             <Grid>
-                <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
 
-                <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                <TextBlock Grid.Column="0" Text="{Binding StatusText}" VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusText}" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <ui:Button Content="关闭" Margin="0,0,10,0" Click="OnCloseClick" />
 
-                    <!-- Start Monitoring Button -->
                     <ui:Button Content="开始监视安装"
                                Icon="{ui:SymbolIcon Play24}"
                                Appearance="Primary"
                                Command="{Binding StartMonitoringCommand}"
                                Visibility="{Binding IsMonitoring, Converter={StaticResource InvBoolToVis}}" />
 
-                    <!-- Stop & Save Button -->
                     <ui:Button Content="完成安装并保存日志"
                                Icon="{ui:SymbolIcon Checkmark24}"
                                Appearance="Success"

@@ -12,10 +12,16 @@ public class InstalledApp
     public string DisplayIcon { get; init; } = string.Empty;
     public string InstallDate { get; init; } = string.Empty;
     public long EstimatedSizeInBytes { get; init; }
-    public string Architecture { get; init; } = "x64";
+    public string Architecture { get; init; } = "64 位";
     public bool Is64Bit { get; init; } = true;
     public bool HasTraceLog { get; set; }
     public string? TraceLogPath { get; set; }
+    public string RegistryKeyPath { get; init; } = string.Empty;
+    public string UninstallKeyName { get; init; } = string.Empty;
+    public bool IsWindowsApp { get; init; }
+    public bool IsProtectedSingleFile { get; init; }
+
+    public string PublisherDisplay => string.IsNullOrWhiteSpace(Publisher) ? "未知发行商" : Publisher;
 
     public string FormattedSize
     {
@@ -23,11 +29,16 @@ public class InstalledApp
         {
             if (EstimatedSizeInBytes <= 0) return "--";
             double mb = EstimatedSizeInBytes / (1024.0 * 1024.0);
-            if (mb > 1024.0)
+            if (mb >= 1024.0)
             {
                 return $"{mb / 1024.0:F2} GB";
             }
-            return $"{mb:F1} MB";
+            if (mb >= 1.0)
+            {
+                return $"{mb:F1} MB";
+            }
+            double kb = EstimatedSizeInBytes / 1024.0;
+            return $"{kb:F0} KB";
         }
     }
 }

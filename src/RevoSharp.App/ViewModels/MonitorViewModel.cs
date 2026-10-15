@@ -28,7 +28,7 @@ public partial class MonitorViewModel : ObservableObject
     private int _capturedRegistry;
 
     [ObservableProperty]
-    private string _statusText = "请选择安装包并填写软件名称";
+    private string _statusText = "请选择安装包（安装完成后将自动识别新增注册表软件名称）";
 
     [ObservableProperty]
     private ObservableCollection<string> _recentEvents = [];
@@ -49,7 +49,7 @@ public partial class MonitorViewModel : ObservableObject
             {
                 AppName = Path.GetFileNameWithoutExtension(dialog.FileName);
             }
-            StatusText = "已准备就绪，点击“开始监视安装”启动安装程序。";
+            StatusText = "已就绪，点击“开始监视安装”将先建立 ETW 内核会话再启动安装程序。";
         }
     }
 
@@ -58,7 +58,7 @@ public partial class MonitorViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(InstallerPath) || !File.Exists(InstallerPath))
         {
-            MessageBox.Show("请先选择有效的安装文件", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            StatusText = "⚠️ 请先选择有效的安装文件 (.exe / .msi)";
             return;
         }
 
@@ -68,19 +68,20 @@ public partial class MonitorViewModel : ObservableObject
         }
 
         IsMonitoring = true;
-        StatusText = "正在监听安装过程中的底层文件与注册表变动...";
+        StatusText = "正在初始化 ETW 内核追踪会话并启动安装程序...";
         RecentEvents.Clear();
 
         _monitor = new EtwInstallMonitor();
         _monitor.OnItemCaptured += item =>
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            Application.Current?.Dispatcher.InvokeAsync(() =>
             {
+                if (_monitor == null) return;
                 CapturedFiles = _monitor.CapturedFileCount;
                 CapturedRegistry = _monitor.CapturedRegCount;
 
                 RecentEvents.Insert(0, item);
-                if (RecentEvents.Count > 100)
+                if (RecentEvents.Count > 150)
                 {
                     RecentEvents.RemoveAt(RecentEvents.Count - 1);
                 }
@@ -93,9 +94,8 @@ public partial class MonitorViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"启动监视失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-            IsMonitoring = false;
-            StatusText = "监视启动失败";
+            StatusText = $"❌ 启动监视失败: {ex.Message}";
+            CancelAndDispose();
         }
     }
 
@@ -104,16 +104,28 @@ public partial class MonitorViewModel : ObservableObject
     {
         if (_monitor == null) return;
 
-        StatusText = "正在整合与压缩保存安装日志...";
+        StatusText = "正在对比注册表快照并保存安装追踪日志...";
         var log = await _monitor.StopAsync();
         _monitor.Dispose();
         _monitor = null;
         IsMonitoring = false;
 
-        StatusText = $"监视完成！共捕获 {log.CreatedFiles.Count} 个文件，{log.CreatedRegistryKeys.Count} 项注册表变更。";
-        MessageBox.Show($"安装日志已成功保存！\n捕获文件: {log.CreatedFiles.Count}\n捕获注册表: {log.CreatedRegistryKeys.Count}\n后续卸载此软件时将自动使用此日志进行 100% 完整反向回退！",
-            "安装监视完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        string targetTitle = !string.IsNullOrWhiteSpace(log.DetectedDisplayName)
+            ? $"{log.DetectedDisplayName} (自动关联注册表)"
+            : log.AppName;
 
+        StatusText = $"✅ 监视完成！已关联【{targetTitle}】，记录 {log.CreatedFiles.Count} 个文件与 {log.CreatedRegistryKeys.Count} 项注册表。";
         onSaved?.Invoke();
+    }
+
+    public void CancelAndDispose()
+    {
+        IsMonitoring = false;
+        try
+        {
+            _monitor?.Dispose();
+            _monitor = null;
+        }
+        catch { }
     }
 }

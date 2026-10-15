@@ -12,6 +12,7 @@ public partial class UninstallWaitingDialog
     private readonly CancellationTokenSource _cts = new();
 
     public bool ShouldProceedToScan { get; private set; }
+    public bool ForcedByUser { get; private set; }
 
     public UninstallWaitingDialog(InstalledApp app, UninstallerRunner runner, bool forceInteractive)
     {
@@ -22,6 +23,7 @@ public partial class UninstallWaitingDialog
 
         AppNameTextBlock.Text = $"正在卸载【{app.DisplayName}】";
         Loaded += OnLoaded;
+        Closed += (s, e) => _cts.Cancel();
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -31,7 +33,7 @@ public partial class UninstallWaitingDialog
             bool success = await _runner.RunAndTrackUninstallerAsync(
                 _app,
                 _forceInteractive,
-                status => Dispatcher.Invoke(() => StatusTextBlock.Text = status),
+                status => Dispatcher.InvokeAsync(() => StatusTextBlock.Text = status),
                 _cts.Token);
 
             if (!_cts.IsCancellationRequested && success)
@@ -43,7 +45,6 @@ public partial class UninstallWaitingDialog
         }
         catch (OperationCanceledException)
         {
-            // Cancelled
         }
         catch (Exception ex)
         {
@@ -53,6 +54,7 @@ public partial class UninstallWaitingDialog
 
     private void OnForceProceedClick(object sender, RoutedEventArgs e)
     {
+        ForcedByUser = true;
         ShouldProceedToScan = true;
         _cts.Cancel();
         DialogResult = true;
