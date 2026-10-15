@@ -1,0 +1,137 @@
+<ui:FluentWindow x:Class="RevoSharp.App.Views.ResidualReviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:conv="clr-namespace:RevoSharp.App.Converters"
+        mc:Ignorable="d"
+        Title="深度残留审查与一键清理"
+        Height="720" Width="1100"
+        MinHeight="500" MinWidth="800"
+        WindowStartupLocation="CenterOwner"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica">
+
+    <ui:FluentWindow.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+    </ui:FluentWindow.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 1. TitleBar -->
+        <ui:TitleBar Grid.Row="0"
+                     Title="RevoSharp 深度残留清理"
+                     ShowMaximize="True"
+                     ShowMinimize="False"
+                     Icon="{ui:SymbolIcon Broom24}" />
+
+        <!-- 2. Header & Action Filter Toolbar -->
+        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,10" Padding="16,12" CornerRadius="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Row 0: App Name & Category Segmented Buttons -->
+                <Grid Grid.Row="0" Margin="0,0,0,10">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="AppNameTextBlock" Text="程序残留全景清单" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,16,0" />
+
+                        <!-- Category Filters -->
+                        <RadioButton Content="{Binding TotalCount, StringFormat='全部 ({0})'}" IsChecked="True"
+                                     GroupName="CatFilter" Tag="全部" Checked="OnCategoryFilterChecked" Margin="0,0,6,0" />
+                        <RadioButton Content="{Binding RegCount, StringFormat='注册表 ({0})'}"
+                                     GroupName="CatFilter" Tag="注册表" Checked="OnCategoryFilterChecked" Margin="0,0,6,0" />
+                        <RadioButton Content="{Binding FileCount, StringFormat='文件与目录 ({0})'}"
+                                     GroupName="CatFilter" Tag="文件与目录" Checked="OnCategoryFilterChecked" Margin="0,0,6,0" />
+                        <RadioButton Content="{Binding ShortcutCount, StringFormat='快捷方式 ({0})'}"
+                                     GroupName="CatFilter" Tag="快捷方式" Checked="OnCategoryFilterChecked" />
+                    </StackPanel>
+
+                    <!-- Scan Mode & Rescan -->
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <TextBlock Text="扫描级别:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
+                        <ComboBox x:Name="ScanModeComboBox" SelectedIndex="1" Width="110" Margin="0,0,8,0" SelectionChanged="OnScanModeChanged">
+                            <ComboBoxItem Content="安全 (Safe)" />
+                            <ComboBoxItem Content="中等 (推荐)" />
+                            <ComboBoxItem Content="高级 (深度)" />
+                        </ComboBox>
+                        <ui:Button Content="重新扫描" Icon="{ui:SymbolIcon ArrowClockwise24}" Command="{Binding ExecuteScanCommand}" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Row 1: Search Filter & Batch Select -->
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <ui:TextBox Grid.Column="0"
+                                PlaceholderText="过滤路径或关键词..."
+                                Text="{Binding PathFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                Icon="{ui:SymbolIcon Search24}"
+                                ClearButtonEnabled="True" />
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <ui:Button Content="仅选推荐 (高置信度)" Icon="{ui:SymbolIcon Checkmark24}" Appearance="Primary" Command="{Binding SelectHighOnlyCommand}" Margin="0,0,6,0" />
+                        <ui:Button Content="全选" Command="{Binding SelectAllCommand}" Margin="0,0,6,0" />
+                        <ui:Button Content="全不选" Command="{Binding DeselectAllCommand}" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- 3. Central Flat Direct List (0 Level, Instant View) -->
+        <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,10" CornerRadius="8" Padding="2">
+            <Grid>
+                <ui:DataGrid ItemsSource="{Binding DisplayedResiduals}"
+                             AutoGenerateColumns="False"
+                             CanUserAddRows="False"
+                             CanUserDeleteRows="False"
+                             SelectionMode="Single"
+                             GridLinesVisibility="Horizontal"
+                             HeadersVisibility="Column">
+                    <DataGrid.Columns>
+                        <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" Width="50" />
+                        <DataGridTextColumn Header="类别" Binding="{Binding Type}" Width="100" IsReadOnly="True" />
+                        <DataGridTextColumn Header="置信度" Binding="{Binding ConfidenceDisplay}" Width="120" IsReadOnly="True" />
+                        <DataGridTextColumn Header="完整残留路径 / 注册表项" Binding="{Binding Path}" Width="*" IsReadOnly="True" />
+                        <DataGridTextColumn Header="判定原因" Binding="{Binding Reason}" Width="200" IsReadOnly="True" />
+                    </DataGrid.Columns>
+                </ui:DataGrid>
+
+                <!-- Loading Overlay -->
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+                    <ui:ProgressRing Width="50" Height="50" IsIndeterminate="True" HorizontalAlignment="Center" Margin="0,0,0,10" />
+                    <TextBlock Text="正在处理中，请稍候..." Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 4. Footer Clean Action Bar (0 Popup, Auto Flow) -->
+        <Border Grid.Row="3" Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" Padding="16,10">
+            <Grid>
+                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
+
+                <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                    <ui:Button Content="放弃并关闭" Margin="0,0,10,0" Click="OnCancelClick" />
+                    <ui:Button Content="一键安全清除所选并完成"
+                               Icon="{ui:SymbolIcon Checkmark24}"
+                               Appearance="Primary"
+                               Click="OnCleanAllClick" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</ui:FluentWindow>

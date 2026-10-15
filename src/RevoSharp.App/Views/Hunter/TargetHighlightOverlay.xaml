@@ -1,0 +1,21 @@
+<Window x:Class="RevoSharp.App.Views.Hunter.TargetHighlightOverlay"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TargetHighlightOverlay"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        IsHitTestVisible="False"
+        WindowStartupLocation="Manual">
+    <Border x:Name="HighlightBorder"
+            BorderBrush="#0080FF"
+            BorderThickness="3"
+            CornerRadius="4"
+            Background="#150080FF">
+        <Border.Effect>
+            <DropShadowEffect Color="#00A2FF" BlurRadius="12" ShadowDepth="0" Opacity="0.8" />
+        </Border.Effect>
+    </Border>
+</Window>

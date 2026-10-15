@@ -1,0 +1,153 @@
+<ui:FluentWindow x:Class="RevoSharp.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:vm="clr-namespace:RevoSharp.App.ViewModels"
+        xmlns:conv="clr-namespace:RevoSharp.App.Converters"
+        mc:Ignorable="d"
+        Title="RevoSharp - 深度卸载与实时安装监控"
+        Height="720" Width="1100"
+        MinHeight="500" MinWidth="800"
+        WindowStartupLocation="CenterScreen"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica">
+
+    <ui:FluentWindow.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+        <conv:NullToBoolConverter x:Key="NullToBool" />
+    </ui:FluentWindow.Resources>
+
+    <ui:FluentWindow.DataContext>
+        <vm:MainViewModel x:Name="ViewModel" />
+    </ui:FluentWindow.DataContext>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 1. Window TitleBar -->
+        <ui:TitleBar Grid.Row="0"
+                     Title="RevoSharp"
+                     ShowMaximize="True"
+                     ShowMinimize="True"
+                     Icon="{ui:SymbolIcon Shield24}">
+            <ui:TitleBar.Header>
+                <TextBlock Text="现代软件深度卸载与内核安装监控" Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
+            </ui:TitleBar.Header>
+        </ui:TitleBar>
+
+        <!-- 2. Action Command Bar -->
+        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Padding="16,12" Margin="16,0,16,12" CornerRadius="8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="280" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Search Box -->
+                <ui:TextBox Grid.Column="0"
+                            PlaceholderText="搜索已安装程序或厂商..."
+                            Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                            Icon="{ui:SymbolIcon Search24}"
+                            ClearButtonEnabled="True" />
+
+                <!-- Action Buttons -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <ui:Button Content="监视新安装"
+                               Icon="{ui:SymbolIcon Record24}"
+                               Appearance="Primary"
+                               Margin="0,0,8,0"
+                               Click="OnMonitorInstallClick" />
+
+                    <ui:Button Content="卸载并清理残留"
+                               Icon="{ui:SymbolIcon Delete24}"
+                               Appearance="Danger"
+                               Margin="0,0,8,0"
+                               IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
+                               Click="OnUninstallClick" />
+
+                    <ui:Button Content="静默快速卸载"
+                               Icon="{ui:SymbolIcon Flash24}"
+                               Margin="0,0,8,0"
+                               IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
+                               Click="OnQuickUninstallClick" />
+
+                    <ui:Button Content="打开目录"
+                               Icon="{ui:SymbolIcon FolderOpen24}"
+                               Margin="0,0,8,0"
+                               Command="{Binding OpenLocationCommand}"
+                               IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}" />
+
+                    <ui:Button Content="猎犬模式"
+                               Icon="{ui:SymbolIcon Target24}"
+                               Appearance="Primary"
+                               Margin="0,0,8,0"
+                               Click="OnHunterModeClick"
+                               ToolTip="进入猎犬准星模式，拖拽瞄准屏幕任意弹窗、桌面图标或未知进程" />
+
+                    <ui:Button Content="刷新列表"
+                               Icon="{ui:SymbolIcon ArrowClockwise24}"
+                               Command="{Binding LoadAppsCommand}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 3. Installed Apps DataGrid -->
+        <Border Grid.Row="2" Margin="16,0,16,12" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="2">
+            <Grid>
+                <ui:DataGrid ItemsSource="{Binding Apps}"
+                             SelectedItem="{Binding SelectedApp}"
+                             AutoGenerateColumns="False"
+                             CanUserAddRows="False"
+                             CanUserDeleteRows="False"
+                             IsReadOnly="True"
+                             SelectionMode="Single"
+                             GridLinesVisibility="Horizontal"
+                             HeadersVisibility="Column">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="软件名称" Binding="{Binding DisplayName}" Width="280" />
+                        <DataGridTextColumn Header="版本" Binding="{Binding DisplayVersion}" Width="120" />
+                        <DataGridTextColumn Header="发行商" Binding="{Binding Publisher}" Width="200" />
+                        <DataGridTextColumn Header="大小" Binding="{Binding FormattedSize}" Width="90" />
+                        <DataGridTextColumn Header="安装日期" Binding="{Binding InstallDate}" Width="110" />
+                        <DataGridTextColumn Header="架构" Binding="{Binding Architecture}" Width="80" />
+                        <DataGridTemplateColumn Header="安装监视日志" Width="120">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:Badge Content="已捕获" Appearance="Success" Visibility="{Binding HasTraceLog, Converter={StaticResource BoolToVis}}" />
+                                        <TextBlock Text="未跟踪" Foreground="{DynamicResource TextFillColorTertiaryBrush}" Visibility="{Binding HasTraceLog, Converter={StaticResource InvBoolToVis}}" FontSize="11" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </ui:DataGrid>
+
+                <!-- Loading Overlay -->
+                <ui:ProgressRing IsIndeterminate="True"
+                                 Width="60" Height="60"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}" />
+            </Grid>
+        </Border>
+
+        <!-- 4. Status Bar -->
+        <Border Grid.Row="3" Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" Padding="16,6">
+            <Grid>
+                <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
+                <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="12"
+                           Text="RevoSharp v1.0.0 | .NET 8 (x64) | ETW Kernel Engine" />
+            </Grid>
+        </Border>
+    </Grid>
+</ui:FluentWindow>

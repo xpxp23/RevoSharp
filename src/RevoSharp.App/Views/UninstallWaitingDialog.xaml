@@ -1,0 +1,81 @@
+<ui:FluentWindow x:Class="RevoSharp.App.Views.UninstallWaitingDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        mc:Ignorable="d"
+        Title="正在执行卸载"
+        Height="360" Width="640"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 1. TitleBar -->
+        <ui:TitleBar Grid.Row="0"
+                     Title="原厂卸载进程监控"
+                     ShowMaximize="False"
+                     ShowMinimize="False"
+                     Icon="{ui:SymbolIcon Delete24}" />
+
+        <!-- 2. Main Content Card -->
+        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,12" Padding="20" CornerRadius="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                    <TextBlock x:Name="AppNameTextBlock" Text="正在卸载应用程序" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Text="请在弹出的官方卸载向导窗口中按提示操作，RevoSharp 正在后台跟踪其实际执行状态。"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" Margin="0,4,0,0" />
+                </StackPanel>
+
+                <!-- Process Monitoring Status -->
+                <Border Grid.Row="1" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" Padding="12" CornerRadius="6" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ui:ProgressRing Grid.Column="0" Width="28" Height="28" IsIndeterminate="True" Margin="0,0,12,0" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock x:Name="StatusTextBlock" Text="正在启动并等待卸载引导程序..." FontSize="13" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="实时监控中：已关联子进程树与安装目录活动" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="11" Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <TextBlock Grid.Row="2"
+                           Text="提示：所有相关卸载进程完全退出后将自动进入残留扫描；若您已在界面完成卸载但尚未自动跳转，可直接点击右下方按钮提前进入扫描。"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Bottom" />
+            </Grid>
+        </Border>
+
+        <!-- 3. Bottom Action Bar -->
+        <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" Padding="16,12">
+            <Grid>
+                <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                    <ui:Button Content="取消" Margin="0,0,10,0" Click="OnCancelClick" />
+                    <ui:Button Content="原厂已完成，立即扫描残留"
+                               Appearance="Primary"
+                               Icon="{ui:SymbolIcon ArrowRight24}"
+                               Click="OnForceProceedClick" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</ui:FluentWindow>
