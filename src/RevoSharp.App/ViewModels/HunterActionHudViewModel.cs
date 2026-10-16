@@ -41,7 +41,7 @@ public partial class HunterActionHudViewModel : ObservableObject
 
     public bool CanForceClean => !TargetInfo.IsSystemCritical;
 
-    public bool CanKillProcess => !TargetInfo.IsSystemCritical;
+    public bool CanKillProcess => !TargetInfo.IsSystemCritical && TargetInfo.ProcessId > 4;
 
     public bool CanDisableAutostart => TargetInfo.HasAutostartEntry && !TargetInfo.IsSystemCritical;
 
@@ -81,29 +81,30 @@ public partial class HunterActionHudViewModel : ObservableObject
         if (string.IsNullOrEmpty(TargetInfo.ExecutablePath) || !File.Exists(TargetInfo.ExecutablePath))
             return;
 
+        IntPtr[] large = new IntPtr[1];
+        IntPtr[] small = new IntPtr[1];
         try
         {
-            IntPtr[] large = new IntPtr[1];
-            IntPtr[] small = new IntPtr[1];
-            if (ExtractIconEx(TargetInfo.ExecutablePath, 0, large, small, 1) > 0 && large[0] != IntPtr.Zero)
+            if (ExtractIconEx(TargetInfo.ExecutablePath, 0, large, small, 1) > 0)
             {
-                try
+                IntPtr chosen = large[0] != IntPtr.Zero ? large[0] : small[0];
+                if (chosen != IntPtr.Zero)
                 {
                     var bs = Imaging.CreateBitmapSourceFromHIcon(
-                        large[0],
+                        chosen,
                         Int32Rect.Empty,
                         BitmapSizeOptions.FromEmptyOptions());
                     bs.Freeze();
                     AppIcon = bs;
                 }
-                finally
-                {
-                    DestroyIcon(large[0]);
-                    if (small[0] != IntPtr.Zero) DestroyIcon(small[0]);
-                }
             }
         }
         catch { }
+        finally
+        {
+            if (large[0] != IntPtr.Zero) DestroyIcon(large[0]);
+            if (small[0] != IntPtr.Zero) DestroyIcon(small[0]);
+        }
     }
 
     [DllImport("shell32.dll", CharSet = CharSet.Auto)]
@@ -126,7 +127,7 @@ public partial class HunterActionHudViewModel : ObservableObject
             await _uninstallerRunner.RunAndTrackUninstallerAsync(
                 app,
                 forceInteractive: true,
-                status => StatusMessage = status,
+                status => Application.Current?.Dispatcher.InvokeAsync(() => StatusMessage = status),
                 cts.Token);
 
             StatusMessage = "原厂卸载已结束，正在进行深度逆向残留扫描...";
@@ -154,7 +155,10 @@ public partial class HunterActionHudViewModel : ObservableObject
 
         try
         {
-            _hunterService.KillProcessTree(TargetInfo.ProcessId);
+            if (TargetInfo.ProcessId > 4)
+            {
+                await Task.Run(() => _hunterService.KillProcessTree(TargetInfo.ProcessId));
+            }
 
             var app = TargetInfo.EffectiveApp;
             StatusMessage = "正在逆向索引 CLSID、服务、计划任务与目录残留...";
@@ -174,28 +178,42 @@ public partial class HunterActionHudViewModel : ObservableObject
     }
 
     [RelayCommand]
-    public void KillProcess()
+    public async Task KillProcessAsync()
     {
         if (!CanKillProcess) return;
-        bool ok = _hunterService.KillProcessTree(TargetInfo.ProcessId);
-        StatusMessage = ok
-            ? $"✅ 已成功终止目标进程树 (PID: {TargetInfo.ProcessId})"
-            : "终止进程失败（目标进程可能已退出）";
+        IsBusy = true;
+        try
+        {
+            bool ok = await Task.Run(() => _hunterService.KillProcessTree(TargetInfo.ProcessId));
+            StatusMessage = ok
+                ? $"✅ 已成功终止目标进程树 (PID: {TargetInfo.ProcessId})"
+                : "终止进程失败（目标进程可能已退出）";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     [RelayCommand]
-    public void DisableAutostart()
+    public async Task DisableAutostartAsync()
     {
         if (!CanDisableAutostart) return;
+        IsBusy = true;
+        try
+        {
+            bool killed = TargetInfo.ProcessId > 4 && await Task.Run(() => _hunterService.KillProcessTree(TargetInfo.ProcessId));
+            bool removed = await _hunterService.DisableAutostartAsync(TargetInfo);
 
-        // First terminate the active process tree, then backup & remove autostart entries
-        bool killed = _hunterService.KillProcessTree(TargetInfo.ProcessId);
-        bool removed = _hunterService.DisableAutostart(TargetInfo);
-
-        StatusMessage = removed
-            ? (killed ? "✅ 已终止目标进程并安全备份清除所有自启动项" : "✅ 已安全备份并清除该目标的所有开机自启动项")
-            : "未发现或无法移除自启项";
-        OnPropertyChanged(nameof(CanDisableAutostart));
+            StatusMessage = removed
+                ? (killed ? "✅ 已终止目标进程并安全备份清除所有自启动项（可在备份中心还原）" : "✅ 已安全备份并清除所有开机自启动项（可在备份中心还原）")
+                : "未发现或无法移除自启项";
+            OnPropertyChanged(nameof(CanDisableAutostart));
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     [RelayCommand]

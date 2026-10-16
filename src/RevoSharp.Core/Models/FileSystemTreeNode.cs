@@ -12,6 +12,8 @@ public class FileSystemTreeNode : INotifyPropertyChanged
     public bool IsMatched { get; set; }
     public string? MatchReason { get; set; }
     public ResidualCategory Category { get; set; } = ResidualCategory.Directory;
+    public FileSystemTreeNode? Parent { get; set; }
+    public ResidualItem? AssociatedItem { get; set; }
 
     public ObservableCollection<FileSystemTreeNode> Children { get; set; } = [];
 
@@ -28,11 +30,18 @@ public class FileSystemTreeNode : INotifyPropertyChanged
 
                 if (value.HasValue)
                 {
+                    if (AssociatedItem != null)
+                    {
+                        AssociatedItem.IsSelected = value.Value;
+                    }
+
                     foreach (var child in Children)
                     {
                         child.SetCheckedFromParent(value.Value);
                     }
                 }
+
+                Parent?.RecalculateCheckStateFromChildren();
             }
         }
     }
@@ -53,17 +62,69 @@ public class FileSystemTreeNode : INotifyPropertyChanged
 
     public void SetCheckedFromParent(bool isChecked)
     {
-        _isChecked = isChecked;
-        OnPropertyChanged(nameof(IsChecked));
+        if (_isChecked != isChecked)
+        {
+            _isChecked = isChecked;
+            OnPropertyChanged(nameof(IsChecked));
+        }
+
+        if (AssociatedItem != null)
+        {
+            AssociatedItem.IsSelected = isChecked;
+        }
+
         foreach (var child in Children)
         {
             child.SetCheckedFromParent(isChecked);
         }
     }
 
+    public void SyncFromItemSelection()
+    {
+        foreach (var child in Children)
+        {
+            child.SyncFromItemSelection();
+        }
+
+        if (Children.Count > 0)
+        {
+            RecalculateCheckStateFromChildren(notifyParent: false);
+        }
+        else if (AssociatedItem != null)
+        {
+            _isChecked = AssociatedItem.IsSelected;
+            OnPropertyChanged(nameof(IsChecked));
+        }
+    }
+
+    public void RecalculateCheckStateFromChildren(bool notifyParent = true)
+    {
+        if (Children.Count == 0) return;
+
+        bool allChecked = Children.All(c => c.IsChecked == true);
+        bool allUnchecked = Children.All(c => c.IsChecked == false);
+
+        bool? newState = allChecked ? true : (allUnchecked ? false : null);
+        if (AssociatedItem != null && newState.HasValue)
+        {
+            AssociatedItem.IsSelected = newState.Value;
+        }
+
+        if (_isChecked != newState)
+        {
+            _isChecked = newState;
+            OnPropertyChanged(nameof(IsChecked));
+            if (notifyParent)
+            {
+                Parent?.RecalculateCheckStateFromChildren();
+            }
+        }
+    }
+
     public string IconGlyph => Category switch
     {
         ResidualCategory.Shortcut => "🔗",
+        ResidualCategory.ScheduledTask => "⏰",
         ResidualCategory.File => "📄",
         _ => "📁"
     };

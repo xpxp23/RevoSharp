@@ -5,7 +5,6 @@ using System.IO;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.Win32;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Safety;
@@ -16,6 +15,7 @@ namespace RevoSharp.App.ViewModels;
 public partial class ResidualReviewViewModel : ObservableObject
 {
     private readonly ResidualScanner _scanner = new();
+    private bool _suppressTreeSync;
 
     public InstalledApp TargetApp { get; }
 
@@ -25,7 +25,16 @@ public partial class ResidualReviewViewModel : ObservableObject
     private ObservableCollection<ResidualItem> _displayedResiduals = [];
 
     [ObservableProperty]
+    private ObservableCollection<RegistryTreeNode> _registryTreeNodes = [];
+
+    [ObservableProperty]
+    private ObservableCollection<FileSystemTreeNode> _fileSystemTreeNodes = [];
+
+    [ObservableProperty]
     private ResidualItem? _selectedResidual;
+
+    [ObservableProperty]
+    private bool _isTreeViewMode;
 
     [ObservableProperty]
     private bool _isBusy;
@@ -82,12 +91,62 @@ public partial class ResidualReviewViewModel : ObservableObject
         {
             item.PropertyChanged += OnResidualItemPropertyChanged;
         }
+
+        RebuildTrees();
+    }
+
+    private void RebuildTrees()
+    {
+        _suppressTreeSync = true;
+        try
+        {
+            RegistryTreeNodes = TreeBuilder.BuildRegistryTree(_allResiduals);
+            FileSystemTreeNodes = TreeBuilder.BuildFileSystemTree(_allResiduals);
+        }
+        finally
+        {
+            _suppressTreeSync = false;
+        }
+    }
+
+    private void SyncTreesFromItems()
+    {
+        if (_suppressTreeSync) return;
+        _suppressTreeSync = true;
+        try
+        {
+            foreach (var root in RegistryTreeNodes)
+            {
+                root.SyncFromItemSelection();
+            }
+            foreach (var root in FileSystemTreeNodes)
+            {
+                root.SyncFromItemSelection();
+            }
+        }
+        finally
+        {
+            _suppressTreeSync = false;
+        }
+    }
+
+    partial void OnIsTreeViewModeChanged(bool value)
+    {
+        if (value)
+        {
+            SyncTreesFromItems();
+        }
     }
 
     private void OnResidualItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(ResidualItem.IsSelected))
         {
+            // When in Flat View, keep tree nodes synced; when in Tree View, tree nodes manage their own tri-state cascade directly
+            if (!IsTreeViewMode && !_suppressTreeSync)
+            {
+                SyncTreesFromItems();
+            }
             UpdateSelectionStatus();
         }
     }
@@ -174,25 +233,87 @@ public partial class ResidualReviewViewModel : ObservableObject
     [RelayCommand]
     public void SelectAll()
     {
-        foreach (var item in DisplayedResiduals) item.IsSelected = true;
+        var targetSet = IsTreeViewMode ? (IEnumerable<ResidualItem>)_allResiduals : DisplayedResiduals;
+        _suppressTreeSync = true;
+        try
+        {
+            foreach (var item in targetSet) item.IsSelected = true;
+        }
+        finally
+        {
+            _suppressTreeSync = false;
+        }
+        SyncTreesFromItems();
         UpdateSelectionStatus();
     }
 
     [RelayCommand]
     public void DeselectAll()
     {
-        foreach (var item in DisplayedResiduals) item.IsSelected = false;
+        var targetSet = IsTreeViewMode ? (IEnumerable<ResidualItem>)_allResiduals : DisplayedResiduals;
+        _suppressTreeSync = true;
+        try
+        {
+            foreach (var item in targetSet) item.IsSelected = false;
+        }
+        finally
+        {
+            _suppressTreeSync = false;
+        }
+        SyncTreesFromItems();
         UpdateSelectionStatus();
     }
 
     [RelayCommand]
     public void SelectHighOnly()
     {
-        foreach (var item in DisplayedResiduals)
+        var targetSet = IsTreeViewMode ? (IEnumerable<ResidualItem>)_allResiduals : DisplayedResiduals;
+        _suppressTreeSync = true;
+        try
         {
-            item.IsSelected = item.Confidence == ConfidenceLevel.High;
+            foreach (var item in targetSet)
+            {
+                item.IsSelected = item.Confidence == ConfidenceLevel.High;
+            }
         }
+        finally
+        {
+            _suppressTreeSync = false;
+        }
+        SyncTreesFromItems();
         UpdateSelectionStatus();
+    }
+
+    [RelayCommand]
+    public void ExpandAllTrees()
+    {
+        SetTreeExpandedRecursive(RegistryTreeNodes, true);
+        SetTreeExpandedRecursive(FileSystemTreeNodes, true);
+    }
+
+    [RelayCommand]
+    public void CollapseAllTrees()
+    {
+        SetTreeExpandedRecursive(RegistryTreeNodes, false);
+        SetTreeExpandedRecursive(FileSystemTreeNodes, false);
+    }
+
+    private static void SetTreeExpandedRecursive(IEnumerable<RegistryTreeNode> nodes, bool expanded)
+    {
+        foreach (var n in nodes)
+        {
+            n.IsExpanded = expanded;
+            SetTreeExpandedRecursive(n.Children, expanded);
+        }
+    }
+
+    private static void SetTreeExpandedRecursive(IEnumerable<FileSystemTreeNode> nodes, bool expanded)
+    {
+        foreach (var n in nodes)
+        {
+            n.IsExpanded = expanded;
+            SetTreeExpandedRecursive(n.Children, expanded);
+        }
     }
 
     [RelayCommand]
@@ -259,27 +380,7 @@ public partial class ResidualReviewViewModel : ObservableObject
 
         try
         {
-            int slash = target.Path.IndexOf('\\');
-            if (slash <= 0) return;
-
-            string hiveFull = target.Path.Substring(0, slash).ToUpperInvariant() switch
-            {
-                "HKLM" => "HKEY_LOCAL_MACHINE",
-                "HKCU" => "HKEY_CURRENT_USER",
-                "HKCR" => "HKEY_CLASSES_ROOT",
-                _ => target.Path.Substring(0, slash)
-            };
-
-            string fullRegPath = $@"Computer\{hiveFull}{target.Path.Substring(slash)}";
-            using var regeditKey = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Applets\Regedit");
-            regeditKey?.SetValue("LastKey", fullRegPath);
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "regedit.exe",
-                Arguments = "-m",
-                UseShellExecute = true
-            });
+            RegistryBackup.OpenInRegEdit(target.Path);
             StatusMessage = $"已在注册表编辑器中定位: {target.Path}";
         }
         catch (Exception ex)
@@ -331,6 +432,7 @@ public partial class ResidualReviewViewModel : ObservableObject
         var manifest = new BackupManifest
         {
             AppName = TargetApp.DisplayName,
+            BackupCategory = "卸载残留清理",
             CreatedTime = DateTime.Now
         };
 
@@ -355,6 +457,20 @@ public partial class ResidualReviewViewModel : ObservableObject
                     {
                         case ResidualType.File:
                         case ResidualType.Directory:
+                            if (item.Category == ResidualCategory.ScheduledTask)
+                            {
+                                string? taskBak = await RegistryBackup.BackupAndDeleteScheduledTaskAsync(
+                                    item.Path,
+                                    item.TaskSchedulerName,
+                                    TargetApp.DisplayName);
+                                if (!string.IsNullOrEmpty(taskBak))
+                                {
+                                    manifest.TaskXmlBackupFiles.Add(taskBak);
+                                }
+                                cleanedCount++;
+                                break;
+                            }
+
                             if (FileBackup.SendToRecycleBin(item.Path))
                             {
                                 manifest.RecycledFilePaths.Add(item.Path);
@@ -369,13 +485,12 @@ public partial class ResidualReviewViewModel : ObservableObject
                             break;
 
                         case ResidualType.RegistryKey:
-                            // If this is a Windows Service residual, stop and delete the service via SCM first
                             if (item.Category == ResidualCategory.Service && !string.IsNullOrEmpty(item.ValueName))
                             {
                                 await RegistryBackup.StopAndDeleteServiceAsync(item.ValueName);
                             }
 
-                            string? regBak = await RegistryBackup.ExportKeyAsync(item.Path, TargetApp.DisplayName);
+                            string? regBak = await RegistryBackup.ExportKeyAsync(item.Path, TargetApp.DisplayName, item.Is64BitRegistryView);
                             if (!string.IsNullOrEmpty(regBak))
                             {
                                 manifest.RegBackupFiles.Add(regBak);
@@ -386,7 +501,7 @@ public partial class ResidualReviewViewModel : ObservableObject
                             {
                                 string hive = item.Path.Substring(0, slash);
                                 string sub = item.Path.Substring(slash + 1);
-                                if (RegistryBackup.DeleteKey(hive, sub))
+                                if (RegistryBackup.DeleteKey(hive, sub, item.Is64BitRegistryView))
                                 {
                                     cleanedCount++;
                                 }
@@ -396,7 +511,13 @@ public partial class ResidualReviewViewModel : ObservableObject
                         case ResidualType.RegistryValue:
                             if (!string.IsNullOrEmpty(item.ValueName))
                             {
-                                string? valBak = await RegistryBackup.ExportValueAsync(item.Path, item.ValueName, item.Reason, TargetApp.DisplayName);
+                                string? valBak = await RegistryBackup.ExportValueAsync(
+                                    item.Path,
+                                    item.ValueName,
+                                    item.ValuePreview,
+                                    TargetApp.DisplayName,
+                                    item.Is64BitRegistryView);
+
                                 if (!string.IsNullOrEmpty(valBak))
                                 {
                                     manifest.RegBackupFiles.Add(valBak);
@@ -407,7 +528,7 @@ public partial class ResidualReviewViewModel : ObservableObject
                                 {
                                     string hive = item.Path.Substring(0, valSlash);
                                     string sub = item.Path.Substring(valSlash + 1);
-                                    if (RegistryBackup.DeleteValue(hive, sub, item.ValueName))
+                                    if (RegistryBackup.DeleteValue(hive, sub, item.ValueName, item.Is64BitRegistryView))
                                     {
                                         cleanedCount++;
                                     }
@@ -419,7 +540,7 @@ public partial class ResidualReviewViewModel : ObservableObject
                 catch { }
             }
 
-            if (manifest.TotalBackedUpItems > 0 || manifest.RebootScheduledPaths.Count > 0)
+            if (manifest.TotalBackedUpItems > 0 || manifest.RebootScheduledPaths.Count > 0 || manifest.SystemRestorePointCreated)
             {
                 await RegistryBackup.SaveBackupManifestAsync(manifest);
             }
@@ -427,7 +548,7 @@ public partial class ResidualReviewViewModel : ObservableObject
 
         IsBusy = false;
         StatusMessage = rebootScheduledCount > 0
-            ? $"清理完成！已清除 {cleanedCount} 项（其中 {rebootScheduledCount} 个占用文件已安排重启后自动移除）。"
+            ? $"清理完成！已清除 {cleanedCount} 项（其中 {rebootScheduledCount} 个占用项已安排重启后自动移除）。"
             : $"清理完毕！已安全清除 {cleanedCount} 项残留并保存备份档案。";
 
         onFinished?.Invoke();

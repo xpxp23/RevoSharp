@@ -17,13 +17,15 @@ public partial class MonitorDialog
     {
         if (!_isSavedAndClosing && ViewModel.IsMonitoring)
         {
-            var res = MessageBox.Show(
-                "当前正在监听安装过程，确定要中止监听并丢弃本次记录吗？",
+            bool confirmed = FluentMessageDialog.ShowConfirm(
+                this,
                 "中止安装监控确认",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
+                "当前正在监听安装过程，确定要中止监听并丢弃本次记录吗？",
+                confirmText: "确定中止",
+                cancelText: "继续监听",
+                isWarningOrDanger: true);
 
-            if (res != MessageBoxResult.Yes)
+            if (!confirmed)
             {
                 e.Cancel = true;
                 return;

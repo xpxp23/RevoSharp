@@ -4,10 +4,10 @@ using System.IO;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.Win32;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Discovery;
 using RevoSharp.Engine.Execution;
+using RevoSharp.Engine.Safety;
 using RevoSharp.Engine.Scanning;
 
 namespace RevoSharp.App.ViewModels;
@@ -17,8 +17,14 @@ public partial class MainViewModel : ObservableObject
     private readonly AppLocator _appLocator = new();
     private readonly UninstallerRunner _uninstallerRunner = new();
     private readonly ResidualScanner _residualScanner = new();
+    private CancellationTokenSource? _sizeCalculationCts;
 
     private List<InstalledApp> _allApps = [];
+
+    /// <summary>
+    /// Full unfiltered list of installed applications, used by Hunter Mode so search text never blinds target matching.
+    /// </summary>
+    public IReadOnlyList<InstalledApp> AllApps => _allApps;
 
     [ObservableProperty]
     private ObservableCollection<InstalledApp> _apps = [];
@@ -30,6 +36,9 @@ public partial class MainViewModel : ObservableObject
     private string _searchText = string.Empty;
 
     [ObservableProperty]
+    private string _selectedCategoryFilter = "全部";
+
+    [ObservableProperty]
     private bool _includeWindowsApps;
 
     [ObservableProperty]
@@ -38,12 +47,22 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string _statusText = "就绪";
 
+    public int TotalAppCount => _allApps.Count;
+    public int RecentAppCount => _allApps.Count(a => a.IsRecentlyInstalled);
+    public int TracedAppCount => _allApps.Count(a => a.HasTraceLog);
+    public int StoreAppCount => _allApps.Count(a => a.IsWindowsApp);
+
     public MainViewModel()
     {
         _ = LoadAppsAsync();
     }
 
     partial void OnSearchTextChanged(string value)
+    {
+        ApplyFilter();
+    }
+
+    partial void OnSelectedCategoryFilterChanged(string value)
     {
         ApplyFilter();
     }
@@ -56,12 +75,18 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     public async Task LoadAppsAsync()
     {
+        _sizeCalculationCts?.Cancel();
+        _sizeCalculationCts?.Dispose();
+        _sizeCalculationCts = new CancellationTokenSource();
+        var token = _sizeCalculationCts.Token;
+
         IsLoading = true;
         StatusText = "正在扫描系统已安装软件与关联监控日志...";
         try
         {
             string? previousSelectedId = SelectedApp?.Id;
             _allApps = await _appLocator.GetInstalledAppsAsync(IncludeWindowsApps);
+            NotifyCategoryCounts();
             ApplyFilter();
 
             if (previousSelectedId != null)
@@ -70,9 +95,11 @@ public partial class MainViewModel : ObservableObject
             }
 
             int tracedCount = _allApps.Count(a => a.HasTraceLog);
-            StatusText = tracedCount > 0
-                ? $"共发现 {_allApps.Count} 款程序（其中 {tracedCount} 款已关联 ETW 安装监控日志）"
-                : $"共发现 {_allApps.Count} 款已安装程序";
+            int recentCount = _allApps.Count(a => a.IsRecentlyInstalled);
+            StatusText = $"共发现 {_allApps.Count} 款程序（近期新装 {recentCount} 款 | 已关联监控日志 {tracedCount} 款）";
+
+            // Asynchronously populate missing folder sizes in the background without blocking the UI
+            _ = _appLocator.PopulateMissingSizesAsync(_allApps, token);
         }
         catch (Exception ex)
         {
@@ -84,21 +111,46 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    private void NotifyCategoryCounts()
+    {
+        OnPropertyChanged(nameof(TotalAppCount));
+        OnPropertyChanged(nameof(RecentAppCount));
+        OnPropertyChanged(nameof(TracedAppCount));
+        OnPropertyChanged(nameof(StoreAppCount));
+    }
+
     private void ApplyFilter()
     {
-        if (string.IsNullOrWhiteSpace(SearchText))
+        IEnumerable<InstalledApp> query = _allApps;
+
+        if (SelectedCategoryFilter == "近期新装")
         {
-            Apps = new ObservableCollection<InstalledApp>(_allApps);
+            query = query.Where(a => a.IsRecentlyInstalled);
         }
-        else
+        else if (SelectedCategoryFilter == "已追踪")
         {
-            string query = SearchText.Trim();
-            var filtered = _allApps.Where(a =>
-                a.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                a.Publisher.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                a.DisplayVersion.Contains(query, StringComparison.OrdinalIgnoreCase));
-            Apps = new ObservableCollection<InstalledApp>(filtered);
+            query = query.Where(a => a.HasTraceLog);
         }
+        else if (SelectedCategoryFilter == "商店应用")
+        {
+            query = query.Where(a => a.IsWindowsApp);
+        }
+        else if (SelectedCategoryFilter == "桌面软件")
+        {
+            query = query.Where(a => !a.IsWindowsApp);
+        }
+
+        if (!string.IsNullOrWhiteSpace(SearchText))
+        {
+            string keyword = SearchText.Trim();
+            query = query.Where(a =>
+                a.DisplayName.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                a.Publisher.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                a.DisplayVersion.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                a.InstallLocation.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        Apps = new ObservableCollection<InstalledApp>(query);
     }
 
     [RelayCommand]
@@ -142,26 +194,7 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            int slash = SelectedApp.RegistryKeyPath.IndexOf('\\');
-            if (slash <= 0) return;
-
-            string hiveFull = SelectedApp.RegistryKeyPath.Substring(0, slash).ToUpperInvariant() switch
-            {
-                "HKLM" => "HKEY_LOCAL_MACHINE",
-                "HKCU" => "HKEY_CURRENT_USER",
-                _ => SelectedApp.RegistryKeyPath.Substring(0, slash)
-            };
-
-            string fullRegPath = $@"Computer\{hiveFull}{SelectedApp.RegistryKeyPath.Substring(slash)}";
-            using var regeditKey = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Applets\Regedit");
-            regeditKey?.SetValue("LastKey", fullRegPath);
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "regedit.exe",
-                Arguments = "-m",
-                UseShellExecute = true
-            });
+            RegistryBackup.OpenInRegEdit(SelectedApp.RegistryKeyPath);
             StatusText = $"已在注册表编辑器中定位: {SelectedApp.RegistryKeyPath}";
         }
         catch (Exception ex)
@@ -178,6 +211,23 @@ public partial class MainViewModel : ObservableObject
         {
             Clipboard.SetText(SelectedApp.UninstallString);
             StatusText = $"已复制卸载命令: {SelectedApp.UninstallString}";
+        }
+        catch { }
+    }
+
+    [RelayCommand]
+    public void SearchOnlineInfo()
+    {
+        if (SelectedApp == null) return;
+        try
+        {
+            string q = Uri.EscapeDataString($"{SelectedApp.DisplayName} {SelectedApp.Publisher} software uninstall info");
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = $"https://www.bing.com/search?q={q}",
+                UseShellExecute = true
+            });
+            StatusText = $"已在浏览器中搜索【{SelectedApp.DisplayName}】相关信息";
         }
         catch { }
     }

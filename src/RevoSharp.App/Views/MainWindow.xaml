@@ -8,8 +8,8 @@
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
         Title="RevoSharp - 现代软件深度卸载与内核安装监控"
-        Height="740" Width="1180"
-        MinHeight="520" MinWidth="880"
+        Height="760" Width="1220"
+        MinHeight="540" MinWidth="920"
         WindowStartupLocation="CenterScreen"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -20,6 +20,42 @@
         <conv:NullToBoolConverter x:Key="NullToBool" />
         <conv:CountToVisibilityConverter x:Key="EmptyCountToVis" Invert="True" />
         <conv:AppIconConverter x:Key="AppIconConv" />
+
+        <Style x:Key="CategoryPillRadioStyle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="PillBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="PillBorder" Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="PillBorder" Property="Background" Value="#3A0080FF" />
+                                <Setter TargetName="PillBorder" Property="BorderBrush" Value="#0088FF" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </ui:FluentWindow.Resources>
 
     <ui:FluentWindow.DataContext>
@@ -47,80 +83,97 @@
             </ui:TitleBar.Header>
         </ui:TitleBar>
 
-        <!-- 2. Action Command Bar -->
+        <!-- 2. Action Command Bar + Quick Filter Pills -->
         <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Padding="16,12" Margin="16,0,16,12" CornerRadius="8">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="260" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="260" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                <!-- Search Box -->
-                <ui:TextBox Grid.Column="0"
-                            PlaceholderText="搜索软件名称、发行商或版本..."
-                            Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                            Icon="{ui:SymbolIcon Search24}"
-                            ClearButtonEnabled="True" />
+                    <!-- Search Box -->
+                    <ui:TextBox Grid.Column="0"
+                                PlaceholderText="搜索名称、发行商、版本或路径..."
+                                Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                Icon="{ui:SymbolIcon Search24}"
+                                ClearButtonEnabled="True" />
 
-                <!-- Include Windows Store Apps Toggle -->
-                <CheckBox Grid.Column="1"
-                          Content="含商店应用"
-                          IsChecked="{Binding IncludeWindowsApps}"
-                          VerticalAlignment="Center"
-                          Margin="12,0,0,0"
-                          FontSize="12"
-                          ToolTip="同时扫描并展示 Windows 现代商店应用 (UWP / MSIX)" />
+                    <!-- Include Windows Store Apps Toggle -->
+                    <CheckBox Grid.Column="1"
+                              Content="含商店应用"
+                              IsChecked="{Binding IncludeWindowsApps}"
+                              VerticalAlignment="Center"
+                              Margin="12,0,0,0"
+                              FontSize="12"
+                              ToolTip="同时扫描并展示 Windows 现代商店应用 (UWP / MSIX)" />
 
-                <!-- Action Buttons -->
-                <WrapPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                    <ui:Button Content="卸载并清残留"
-                               Icon="{ui:SymbolIcon Delete24}"
-                               Appearance="Danger"
-                               Margin="0,0,6,0"
-                               IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
-                               Click="OnUninstallClick"
-                               ToolTip="支持单选或多选批量队列卸载：运行原厂卸载器后执行深度逆向残留扫描" />
+                    <!-- Action Buttons -->
+                    <WrapPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                        <ui:Button Content="卸载并清残留"
+                                   Icon="{ui:SymbolIcon Delete24}"
+                                   Appearance="Danger"
+                                   Margin="0,0,6,0"
+                                   IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
+                                   Click="OnUninstallClick"
+                                   ToolTip="支持单选或多选批量队列卸载：运行原厂卸载器后执行深度逆向残留扫描" />
 
-                    <ui:Button Content="静默快卸"
-                               Icon="{ui:SymbolIcon Flash24}"
-                               Margin="0,0,6,0"
-                               IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
-                               Click="OnQuickUninstallClick"
-                               ToolTip="自动转换 MSI /X /qn 或安装包静默参数极速卸载（支持多选批量队列）" />
+                        <ui:Button Content="静默快卸"
+                                   Icon="{ui:SymbolIcon Flash24}"
+                                   Margin="0,0,6,0"
+                                   IsEnabled="{Binding SelectedApp, Converter={StaticResource NullToBool}}"
+                                   Click="OnQuickUninstallClick"
+                                   ToolTip="自动转换 MSI /X /qn 或安装包静默参数极速卸载（多选时支持一键合并清理残留）" />
 
-                    <ui:Button Content="强制卸载向导"
-                               Icon="{ui:SymbolIcon Wrench24}"
-                               Margin="0,0,6,0"
-                               Click="OnForcedUninstallClick"
-                               ToolTip="针对已卸载但遗留残余、卸载器损坏或未登记的软件按名称/路径强制猎杀残留" />
+                        <ui:Button Content="强制卸载向导"
+                                   Icon="{ui:SymbolIcon Wrench24}"
+                                   Margin="0,0,6,0"
+                                   Click="OnForcedUninstallClick"
+                                   ToolTip="针对已卸载但遗留残余、卸载器损坏或未登记的软件按名称/路径强制猎杀残留" />
 
-                    <ui:Button Content="监视安装"
-                               Icon="{ui:SymbolIcon Record24}"
-                               Appearance="Primary"
-                               Margin="0,0,6,0"
-                               Click="OnMonitorInstallClick"
-                               ToolTip="启动 ETW 内核追踪与注册表快照差分，精准记录新安装软件的一举一动" />
+                        <ui:Button Content="监视安装"
+                                   Icon="{ui:SymbolIcon Record24}"
+                                   Appearance="Primary"
+                                   Margin="0,0,6,0"
+                                   Click="OnMonitorInstallClick"
+                                   ToolTip="启动 ETW 内核追踪与注册表快照差分，精准记录新安装软件的一举一动" />
 
-                    <ui:Button Content="猎犬模式"
-                               Icon="{ui:SymbolIcon Target24}"
-                               Appearance="Primary"
-                               Margin="0,0,6,0"
-                               Click="OnHunterModeClick"
-                               ToolTip="进入桌面准星猎杀模式，拖拽瞄准任意窗口或流氓弹窗" />
+                        <ui:Button Content="猎犬模式"
+                                   Icon="{ui:SymbolIcon Target24}"
+                                   Appearance="Primary"
+                                   Margin="0,0,6,0"
+                                   Click="OnHunterModeClick"
+                                   ToolTip="进入桌面准星猎杀模式，支持瞄准任意窗口、弹窗或直接拖入桌面快捷方式" />
 
-                    <ui:Button Content="工具与备份"
-                               Icon="{ui:SymbolIcon Apps24}"
-                               Margin="0,0,6,0"
-                               Click="OnToolkitClick"
-                               ToolTip="开机自启动管理器、注册表多级备份一键还原中心与安装追踪日志库" />
+                        <ui:Button Content="工具与备份"
+                                   Icon="{ui:SymbolIcon Apps24}"
+                                   Margin="0,0,6,0"
+                                   Click="OnToolkitClick"
+                                   ToolTip="开机自启动管理器（支持启用/禁用切换）、多级备份还原中心与安装追踪日志库" />
 
-                    <ui:Button Icon="{ui:SymbolIcon ArrowClockwise24}"
-                               Command="{Binding LoadAppsCommand}"
-                               ToolTip="刷新已安装软件列表" />
+                        <ui:Button Icon="{ui:SymbolIcon ArrowClockwise24}"
+                                   Command="{Binding LoadAppsCommand}"
+                                   ToolTip="刷新已安装软件列表" />
+                    </WrapPanel>
+                </Grid>
+
+                <!-- Quick Category Filter Pills (Geek Uninstaller / BCU style) -->
+                <WrapPanel Margin="0,10,0,0" VerticalAlignment="Center">
+                    <TextBlock Text="快速筛选：" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" Margin="0,0,8,0" />
+                    <RadioButton Content="{Binding TotalAppCount, StringFormat='全部程序 ({0})'}" IsChecked="True"
+                                 Style="{StaticResource CategoryPillRadioStyle}" GroupName="MainAppCat" Tag="全部" Checked="OnAppCategoryFilterChecked" />
+                    <RadioButton Content="{Binding RecentAppCount, StringFormat='✨ 近期新装 ({0})'}"
+                                 Style="{StaticResource CategoryPillRadioStyle}" GroupName="MainAppCat" Tag="近期新装" Checked="OnAppCategoryFilterChecked" />
+                    <RadioButton Content="{Binding TracedAppCount, StringFormat='📡 已追踪日志 ({0})'}"
+                                 Style="{StaticResource CategoryPillRadioStyle}" GroupName="MainAppCat" Tag="已追踪" Checked="OnAppCategoryFilterChecked" />
+                    <RadioButton Content="🖥️ 桌面软件"
+                                 Style="{StaticResource CategoryPillRadioStyle}" GroupName="MainAppCat" Tag="桌面软件" Checked="OnAppCategoryFilterChecked" />
+                    <RadioButton Content="{Binding StoreAppCount, StringFormat='🛍️ 商店应用 ({0})'}"
+                                 Style="{StaticResource CategoryPillRadioStyle}" GroupName="MainAppCat" Tag="商店应用" Checked="OnAppCategoryFilterChecked" />
                 </WrapPanel>
-            </Grid>
+            </StackPanel>
         </Border>
 
         <!-- 3. Installed Apps DataGrid -->
@@ -146,12 +199,14 @@
                             <MenuItem Header="打开安装所在目录" Command="{Binding OpenLocationCommand}" />
                             <MenuItem Header="在注册表编辑器 (RegEdit) 中定位" Command="{Binding OpenRegistryKeyCommand}" />
                             <MenuItem Header="复制原厂卸载命令行" Command="{Binding CopyUninstallStringCommand}" />
+                            <Separator />
+                            <MenuItem Header="在浏览器中搜索该软件信息" Command="{Binding SearchOnlineInfoCommand}" />
                         </ContextMenu>
                     </ui:DataGrid.ContextMenu>
 
                     <DataGrid.Columns>
-                        <!-- App Icon + Name (* Star Width fills window cleanly) -->
-                        <DataGridTemplateColumn Header="软件名称" Width="*" MinWidth="260" SortMemberPath="DisplayName">
+                        <!-- App Icon + Name + Recent/UWP Badges -->
+                        <DataGridTemplateColumn Header="软件名称" Width="*" MinWidth="280" SortMemberPath="DisplayName">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Grid Margin="4,2">
@@ -159,11 +214,13 @@
                                             <ColumnDefinition Width="28" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
 
-                                        <Border Grid.Column="0" Width="22" Height="22" CornerRadius="4" Background="#18FFFFFF" VerticalAlignment="Center">
+                                        <Border Grid.Column="0" Width="22" Height="22" CornerRadius="4"
+                                                Background="{DynamicResource ControlFillColorSecondaryBrush}" VerticalAlignment="Center">
                                             <Grid>
-                                                <ui:SymbolIcon Symbol="Apps24" FontSize="14" Foreground="#66FFFFFF"
+                                                <ui:SymbolIcon Symbol="Apps24" FontSize="14" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                                                HorizontalAlignment="Center" VerticalAlignment="Center" />
                                                 <Image Source="{Binding ., Converter={StaticResource AppIconConv}}"
                                                        Width="18" Height="18" Stretch="Uniform" />
@@ -175,7 +232,14 @@
                                                    Margin="8,0,6,0" TextTrimming="CharacterEllipsis"
                                                    ToolTip="{Binding DisplayName}" />
 
-                                        <Border Grid.Column="2" Background="#280088FF" CornerRadius="4" Padding="5,1"
+                                        <Border Grid.Column="2" Background="#33FF8800" CornerRadius="4" Padding="5,1"
+                                                VerticalAlignment="Center" Margin="0,0,4,0"
+                                                Visibility="{Binding IsRecentlyInstalled, Converter={StaticResource BoolToVis}}"
+                                                ToolTip="近 14 天内新安装或更新的软件">
+                                            <TextBlock Text="新装" FontSize="10" Foreground="#FFBB55" FontWeight="SemiBold" />
+                                        </Border>
+
+                                        <Border Grid.Column="3" Background="#280088FF" CornerRadius="4" Padding="5,1"
                                                 VerticalAlignment="Center" Margin="0,0,4,0"
                                                 Visibility="{Binding IsWindowsApp, Converter={StaticResource BoolToVis}}">
                                             <TextBlock Text="UWP" FontSize="10" Foreground="#88CCFF" />
@@ -189,7 +253,7 @@
                         <DataGridTextColumn Header="发行商" Binding="{Binding PublisherDisplay}" Width="190" />
 
                         <!-- Numeric sorting via SortMemberPath="EstimatedSizeInBytes" -->
-                        <DataGridTextColumn Header="估计大小" Binding="{Binding FormattedSize}" SortMemberPath="EstimatedSizeInBytes" Width="95" />
+                        <DataGridTextColumn Header="占用大小" Binding="{Binding FormattedSize}" SortMemberPath="EstimatedSizeInBytes" Width="95" />
 
                         <DataGridTextColumn Header="安装日期" Binding="{Binding InstallDate}" Width="105" />
                         <DataGridTextColumn Header="架构" Binding="{Binding Architecture}" Width="75" />

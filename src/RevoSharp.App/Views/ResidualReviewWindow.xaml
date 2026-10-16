@@ -4,24 +4,26 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:models="clr-namespace:RevoSharp.Core.Models;assembly=RevoSharp.Core"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
         Title="深度残留审查与一键安全清理"
-        Height="740" Width="1140"
-        MinHeight="520" MinWidth="860"
+        Height="760" Width="1180"
+        MinHeight="540" MinWidth="880"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
 
     <ui:FluentWindow.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
         <conv:CountToVisibilityConverter x:Key="EmptyCountToVis" Invert="True" />
 
-        <!-- Modern Segmented Pill Style for Category RadioButtons -->
+        <!-- Modern Segmented Pill Style for Category & View Mode RadioButtons -->
         <Style x:Key="SegmentedFilterRadioStyle" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
-            <Setter Property="Background" Value="#14FFFFFF" />
-            <Setter Property="BorderBrush" Value="#22FFFFFF" />
+            <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="12,5" />
             <Setter Property="Margin" Value="0,0,6,0" />
@@ -40,12 +42,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="PillBorder" Property="Background" Value="#26FFFFFF" />
+                                <Setter TargetName="PillBorder" Property="Background" Value="{DynamicResource ControlFillColorSecondaryBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="PillBorder" Property="Background" Value="#3A0080FF" />
                                 <Setter TargetName="PillBorder" Property="BorderBrush" Value="#0088FF" />
-                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
                                 <Setter Property="FontWeight" Value="SemiBold" />
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -117,10 +119,11 @@
                     </StackPanel>
                 </Grid>
 
-                <!-- Row 1: Search Filter & Batch Select -->
+                <!-- Row 1: Search Filter, View Mode Switch & Batch Select -->
                 <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="300" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
@@ -131,23 +134,44 @@
                                 Icon="{ui:SymbolIcon Search24}"
                                 ClearButtonEnabled="True" />
 
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- View Mode Switch: Flat Table vs Hierarchical Tree (Revo / BCU style) -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                        <RadioButton Content="📋 扁平明细" IsChecked="True"
+                                     Style="{StaticResource SegmentedFilterRadioStyle}"
+                                     GroupName="ViewModeSwitch" Tag="Flat" Checked="OnViewModeChecked" />
+                        <RadioButton Content="🌲 树形层级"
+                                     Style="{StaticResource SegmentedFilterRadioStyle}"
+                                     GroupName="ViewModeSwitch" Tag="Tree" Checked="OnViewModeChecked" />
+
+                        <ui:Button Content="展开全部"
+                                   Command="{Binding ExpandAllTreesCommand}"
+                                   Visibility="{Binding IsTreeViewMode, Converter={StaticResource BoolToVis}}"
+                                   Margin="4,0,6,0" />
+                        <ui:Button Content="折叠全部"
+                                   Command="{Binding CollapseAllTreesCommand}"
+                                   Visibility="{Binding IsTreeViewMode, Converter={StaticResource BoolToVis}}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                         <ui:Button Content="仅选高置信度 (推荐)" Icon="{ui:SymbolIcon Checkmark24}" Appearance="Primary" Command="{Binding SelectHighOnlyCommand}" Margin="0,0,6,0" />
-                        <ui:Button Content="全选当前" Command="{Binding SelectAllCommand}" Margin="0,0,6,0" />
+                        <ui:Button Content="全选" Command="{Binding SelectAllCommand}" Margin="0,0,6,0" />
                         <ui:Button Content="全不选" Command="{Binding DeselectAllCommand}" />
                     </StackPanel>
                 </Grid>
             </Grid>
         </Border>
 
-        <!-- 3. Central Flat Direct List with Badges & ContextMenu -->
+        <!-- 3. Central Dual-Mode Content Area (Flat DataGrid OR Split Hierarchical TreeView) -->
         <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,10" CornerRadius="8" Padding="2">
             <Grid>
+                <!-- Mode A: Flat Direct DataGrid (with Single-Click CheckBox TemplateColumn) -->
                 <ui:DataGrid ItemsSource="{Binding DisplayedResiduals}"
                              SelectedItem="{Binding SelectedResidual}"
+                             Visibility="{Binding IsTreeViewMode, Converter={StaticResource InvBoolToVis}}"
                              AutoGenerateColumns="False"
                              CanUserAddRows="False"
                              CanUserDeleteRows="False"
+                             IsReadOnly="True"
                              SelectionMode="Single"
                              GridLinesVisibility="Horizontal"
                              HeadersVisibility="Column">
@@ -161,7 +185,16 @@
                     </ui:DataGrid.ContextMenu>
 
                     <DataGrid.Columns>
-                        <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" Width="54" />
+                        <!-- Single-click immediate CheckBox column -->
+                        <DataGridTemplateColumn Header="选择" Width="56">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
 
                         <DataGridTemplateColumn Header="类别" Width="110" SortMemberPath="TypeDisplay" IsReadOnly="True">
                             <DataGridTemplateColumn.CellTemplate>
@@ -195,6 +228,83 @@
                         <DataGridTextColumn Header="命中原因" Binding="{Binding Reason}" Width="220" IsReadOnly="True" />
                     </DataGrid.Columns>
                 </ui:DataGrid>
+
+                <!-- Mode B: Split Hierarchical TreeView (Registry Tree + FileSystem Tree with Tri-State Cascading) -->
+                <Grid Visibility="{Binding IsTreeViewMode, Converter={StaticResource BoolToVis}}" Margin="6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Left: Registry Hierarchical Tree -->
+                    <Border Grid.Column="0" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="🔑 注册表残留层级树 (支持父子三态联动勾选)" FontWeight="SemiBold" FontSize="13" Margin="4,0,0,8" />
+                            <TreeView Grid.Row="1" ItemsSource="{Binding RegistryTreeNodes}" BorderThickness="0" Background="Transparent">
+                                <TreeView.ItemContainerStyle>
+                                    <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
+                                        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                                    </Style>
+                                </TreeView.ItemContainerStyle>
+                                <TreeView.ItemTemplate>
+                                    <HierarchicalDataTemplate DataType="{x:Type models:RegistryTreeNode}" ItemsSource="{Binding Children}">
+                                        <StackPanel Orientation="Horizontal" Margin="0,2">
+                                            <CheckBox IsThreeState="True"
+                                                      IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      VerticalAlignment="Center" Margin="0,0,6,0" />
+                                            <TextBlock Text="{Binding IconGlyph}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                            <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontWeight="SemiBold" />
+                                            <Border Background="#220088FF" CornerRadius="4" Padding="5,1" Margin="8,0,0,0"
+                                                    Visibility="{Binding IsMatched, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="{Binding MatchReason}" FontSize="10" Foreground="#88CCFF" />
+                                            </Border>
+                                        </StackPanel>
+                                    </HierarchicalDataTemplate>
+                                </TreeView.ItemTemplate>
+                            </TreeView>
+                        </Grid>
+                    </Border>
+
+                    <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="Transparent" />
+
+                    <!-- Right: FileSystem Hierarchical Tree -->
+                    <Border Grid.Column="2" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="📁 文件、目录与计划任务层级树 (支持父子三态联动勾选)" FontWeight="SemiBold" FontSize="13" Margin="4,0,0,8" />
+                            <TreeView Grid.Row="1" ItemsSource="{Binding FileSystemTreeNodes}" BorderThickness="0" Background="Transparent">
+                                <TreeView.ItemContainerStyle>
+                                    <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
+                                        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                                    </Style>
+                                </TreeView.ItemContainerStyle>
+                                <TreeView.ItemTemplate>
+                                    <HierarchicalDataTemplate DataType="{x:Type models:FileSystemTreeNode}" ItemsSource="{Binding Children}">
+                                        <StackPanel Orientation="Horizontal" Margin="0,2">
+                                            <CheckBox IsThreeState="True"
+                                                      IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      VerticalAlignment="Center" Margin="0,0,6,0" />
+                                            <TextBlock Text="{Binding IconGlyph}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                            <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontWeight="SemiBold" />
+                                            <Border Background="#2244DD88" CornerRadius="4" Padding="5,1" Margin="8,0,0,0"
+                                                    Visibility="{Binding IsMatched, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="{Binding MatchReason}" FontSize="10" Foreground="#88EEAA" />
+                                            </Border>
+                                        </StackPanel>
+                                    </HierarchicalDataTemplate>
+                                </TreeView.ItemTemplate>
+                            </TreeView>
+                        </Grid>
+                    </Border>
+                </Grid>
 
                 <!-- Empty State Overlay -->
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -233,7 +343,7 @@
                     <CheckBox Content="创建系统还原点" IsChecked="{Binding CreateRestorePoint}" Margin="0,0,12,0" FontSize="12"
                               ToolTip="清理前调用 WMI 创建 Windows 系统还原点" />
                     <CheckBox Content="占用文件重启后删除" IsChecked="{Binding ScheduleLockedOnReboot}" FontSize="12"
-                              ToolTip="若残留文件被后台进程占用无法移入回收站，则自动注册在下次重启时由系统内核删除" />
+                              ToolTip="若残留文件或子目录被后台进程占用无法移入回收站，则自动以后序遍历注册在下次重启时由内核删除" />
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal">

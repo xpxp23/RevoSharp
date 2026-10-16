@@ -1,0 +1,82 @@
+<ui:FluentWindow x:Class="RevoSharp.App.Views.FluentMessageDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="确认操作"
+        Width="500"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar x:Name="DialogTitleBar"
+                     Grid.Row="0"
+                     Title="操作确认"
+                     ShowMaximize="False"
+                     ShowMinimize="False"
+                     Icon="{ui:SymbolIcon Info24}" />
+
+        <Border Grid.Row="1"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                Margin="16,4,16,12"
+                Padding="20,18"
+                CornerRadius="8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border x:Name="IconBadgeBorder"
+                        Grid.Column="0"
+                        Width="40" Height="40"
+                        CornerRadius="20"
+                        Background="#280088FF"
+                        VerticalAlignment="Top"
+                        Margin="0,0,14,0">
+                    <ui:SymbolIcon x:Name="PromptSymbolIcon"
+                                   Symbol="QuestionCircle24"
+                                   FontSize="22"
+                                   Foreground="#66BBFF"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                </Border>
+
+                <TextBlock x:Name="MessageTextBlock"
+                           Grid.Column="1"
+                           Text="请确认是否继续执行此操作？"
+                           FontSize="13"
+                           LineHeight="20"
+                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2"
+                Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}"
+                Padding="16,12">
+            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                <ui:Button x:Name="CancelButton"
+                           Content="取消"
+                           MinWidth="84"
+                           Margin="0,0,10,0"
+                           Click="OnCancelClick" />
+                <ui:Button x:Name="ConfirmButton"
+                           Content="确定继续"
+                           MinWidth="96"
+                           Appearance="Primary"
+                           Icon="{ui:SymbolIcon Checkmark24}"
+                           Click="OnConfirmClick" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</ui:FluentWindow>

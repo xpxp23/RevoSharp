@@ -19,6 +19,17 @@ public class ResidualScanner
         "Clients", "Shared", "Common", "Packages", "Programs"
     };
 
+    /// <summary>
+    /// Sibling edition/variant tokens that indicate a separate side-by-side product installation
+    /// (e.g., "Google Chrome Beta" vs "Google Chrome", or "Visual Studio Code" vs "Visual Studio").
+    /// Prevents accidental high-confidence collateral deletion of sibling products.
+    /// </summary>
+    private static readonly HashSet<string> SiblingVariantTokens = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "beta", "canary", "dev", "nightly", "insiders", "preview", "server", "agent",
+        "sdk", "runtime", "redist", "viewer", "helper", "bridge", "updater", "code", "studio"
+    };
+
     private readonly ReverseReferenceScanner _refScanner = new();
     private readonly ShortcutScanner _shortcutScanner = new();
 
@@ -111,6 +122,26 @@ public class ResidualScanner
                 IsSelected = true
             });
         }
+
+        foreach (var rawValToken in traceLog.ModifiedRegistryValues)
+        {
+            int sep = rawValToken.IndexOf("||", StringComparison.Ordinal);
+            if (sep <= 0) continue;
+
+            string keyPath = rawValToken.Substring(0, sep);
+            string valName = rawValToken.Substring(sep + 2);
+
+            AddResidualIfUnique(results, new ResidualItem
+            {
+                Type = ResidualType.RegistryValue,
+                Category = ResidualCategory.RegistryValue,
+                Path = keyPath,
+                ValueName = valName,
+                Confidence = ConfidenceLevel.High,
+                Reason = "ETW 安装监控精确捕获写入键值",
+                IsSelected = true
+            });
+        }
     }
 
     private static void ScanSafeItems(TargetProfile profile, List<ResidualItem> results)
@@ -148,30 +179,36 @@ public class ResidualScanner
         // 2. Uninstall registry key if it wasn't cleaned up by the native uninstaller
         if (!string.IsNullOrEmpty(profile.UninstallKeyName))
         {
-            var uninstallHives = new[]
+            var uninstallHives = new (RegistryHive Hive, RegistryView View, string SubPath, string FullDisplayPath, bool Is64View)[]
             {
-                (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName, "HKLM"),
-                (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName, @"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName),
-                (RegistryHive.CurrentUser, RegistryView.Default, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName, "HKCU")
+                (RegistryHive.LocalMachine, RegistryView.Registry64,
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName,
+                    @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName,
+                    true),
+                (RegistryHive.LocalMachine, RegistryView.Registry32,
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName,
+                    @"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName,
+                    false),
+                (RegistryHive.CurrentUser, RegistryView.Default,
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName,
+                    @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" + profile.UninstallKeyName,
+                    Environment.Is64BitOperatingSystem)
             };
 
-            foreach (var (hive, view, path, displayPrefix) in uninstallHives)
+            foreach (var (hive, view, subPath, fullDisplayPath, is64View) in uninstallHives)
             {
                 try
                 {
                     using var baseKey = RegistryKey.OpenBaseKey(hive, view);
-                    using var key = baseKey.OpenSubKey(path);
+                    using var key = baseKey.OpenSubKey(subPath);
                     if (key != null)
                     {
-                        string fullPath = displayPrefix.StartsWith("HKLM\\SOFTWARE\\WOW6432Node")
-                            ? displayPrefix
-                            : $@"{displayPrefix}\{path}";
-
                         AddResidualIfUnique(results, new ResidualItem
                         {
                             Type = ResidualType.RegistryKey,
                             Category = ResidualCategory.RegistryKey,
-                            Path = fullPath,
+                            Path = fullDisplayPath,
+                            Is64BitRegistryView = is64View,
                             Confidence = ConfidenceLevel.High,
                             Reason = "原厂残留卸载注册表主键",
                             IsSelected = true
@@ -207,8 +244,6 @@ public class ResidualScanner
                 {
                     string dirName = Path.GetFileName(dir);
 
-                    // IMPORTANT FIX: Check if dirName is the Publisher root directory FIRST
-                    // so we drill into publisher subdirectories instead of deleting the whole publisher root!
                     bool isPublisherRoot = BlacklistedNames.Contains(dirName) ||
                         (!string.IsNullOrEmpty(profile.Publisher) &&
                          IsPublisherNameMatch(dirName, profile.Publisher) &&
@@ -235,7 +270,7 @@ public class ResidualScanner
                                             SizeInBytes = CalculatePathSize(subDir, isDirectory: true),
                                             Confidence = conf,
                                             Reason = $"厂商子目录 ({dirName}\\{subName} - {subReason})",
-                                            IsSelected = conf != ConfidenceLevel.Low
+                                            IsSelected = conf == ConfidenceLevel.High || conf == ConfidenceLevel.Medium
                                         });
                                     }
                                 }
@@ -255,7 +290,7 @@ public class ResidualScanner
                             SizeInBytes = CalculatePathSize(dir, isDirectory: true),
                             Confidence = confidence,
                             Reason = $"应用数据与缓存目录 ({matchReason})",
-                            IsSelected = confidence != ConfidenceLevel.Low
+                            IsSelected = confidence == ConfidenceLevel.High || confidence == ConfidenceLevel.Medium
                         });
                     }
                 }
@@ -266,14 +301,14 @@ public class ResidualScanner
 
     private static void ScanSoftwareHives(TargetProfile profile, List<ResidualItem> results, bool deepFuzzy)
     {
-        var hives = new[]
+        var hives = new (RegistryHive Hive, RegistryView View, string SubPath, string HivePrefix, bool Is64View)[]
         {
-            (RegistryHive.CurrentUser, RegistryView.Default, @"Software", "HKCU"),
-            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE", "HKLM"),
-            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE", @"HKLM\SOFTWARE\WOW6432Node")
+            (RegistryHive.CurrentUser, RegistryView.Default, @"Software", "HKCU", Environment.Is64BitOperatingSystem),
+            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE", "HKLM", true),
+            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE", @"HKLM\SOFTWARE\WOW6432Node", false)
         };
 
-        foreach (var (hive, view, subPath, hivePrefix) in hives)
+        foreach (var (hive, view, subPath, hivePrefix, is64View) in hives)
         {
             try
             {
@@ -312,9 +347,10 @@ public class ResidualScanner
                                             Type = ResidualType.RegistryKey,
                                             Category = ResidualCategory.RegistryKey,
                                             Path = fullSub,
+                                            Is64BitRegistryView = is64View,
                                             Confidence = conf,
                                             Reason = $"厂商分支下软件子键 ({keyName}\\{subAppKey} - {subReason})",
-                                            IsSelected = conf != ConfidenceLevel.Low
+                                            IsSelected = conf == ConfidenceLevel.High || conf == ConfidenceLevel.Medium
                                         });
                                     }
                                 }
@@ -331,9 +367,10 @@ public class ResidualScanner
                             Type = ResidualType.RegistryKey,
                             Category = ResidualCategory.RegistryKey,
                             Path = fullKeyPath,
+                            Is64BitRegistryView = is64View,
                             Confidence = confidence,
                             Reason = $"注册表软件配置主键 ({reason})",
-                            IsSelected = confidence != ConfidenceLevel.Low
+                            IsSelected = confidence == ConfidenceLevel.High || confidence == ConfidenceLevel.Medium
                         });
                     }
                 }
@@ -383,20 +420,20 @@ public class ResidualScanner
         confidence = ConfidenceLevel.High;
         if (string.IsNullOrWhiteSpace(candidate)) return false;
 
-        if (MatchesExactOrContainedTarget(candidate, profile.DisplayName))
+        if (EvaluateNameMatch(candidate, profile.DisplayName, deepFuzzy, out ConfidenceLevel nameConf, out string nameNote))
         {
-            matchReason = "匹配软件名称";
-            confidence = ConfidenceLevel.High;
+            matchReason = string.IsNullOrEmpty(nameNote) ? "精确匹配软件名称" : nameNote;
+            confidence = nameConf;
             return true;
         }
 
         foreach (var exe in profile.MainExeNames)
         {
             string exeNoExt = Path.GetFileNameWithoutExtension(exe);
-            if (exeNoExt.Length >= 4 && MatchesExactOrContainedTarget(candidate, exeNoExt))
+            if (GetEffectiveLength(exeNoExt) >= 4 && EvaluateNameMatch(candidate, exeNoExt, deepFuzzy, out ConfidenceLevel exeConf, out string exeNote))
             {
-                matchReason = $"匹配主程序名称 ({exe})";
-                confidence = ConfidenceLevel.High;
+                matchReason = string.IsNullOrEmpty(exeNote) ? $"匹配主程序名称 ({exe})" : $"{exeNote} ({exe})";
+                confidence = exeConf;
                 return true;
             }
         }
@@ -414,7 +451,7 @@ public class ResidualScanner
             string cleanCand = CleanName(candidate);
             foreach (var token in profile.CleanTokens)
             {
-                if (token.Length >= 5 &&
+                if (GetEffectiveLength(token) >= 5 &&
                     !IsPublisherNameMatch(token, profile.Publisher) &&
                     cleanCand.Contains(token, StringComparison.OrdinalIgnoreCase))
                 {
@@ -428,31 +465,89 @@ public class ResidualScanner
         return false;
     }
 
-    private static bool MatchesExactOrContainedTarget(string candidate, string target)
+    /// <summary>
+    /// Evaluates candidate folder/key name against target name safely (supporting both Latin and CJK names):
+    /// - Exact or space-insensitive match -> High confidence.
+    /// - Candidate starts with target + suffix: if suffix is a sibling edition (e.g. "Beta", "Canary", "Code"),
+    ///   NEVER mark as High confidence; only include as Low confidence in Advanced mode to prevent collateral deletion!
+    /// </summary>
+    private static bool EvaluateNameMatch(
+        string candidate,
+        string target,
+        bool allowSiblingInAdvanced,
+        out ConfidenceLevel confidence,
+        out string note)
     {
-        if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(target)) return false;
-        if (candidate.Equals(target, StringComparison.OrdinalIgnoreCase)) return true;
+        confidence = ConfidenceLevel.High;
+        note = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(target))
+            return false;
+
+        if (candidate.Equals(target, StringComparison.OrdinalIgnoreCase))
+            return true;
 
         string cleanCandidate = CleanName(candidate);
         string cleanTarget = CleanName(target);
 
-        if (cleanCandidate.Length >= 4 && cleanTarget.Length >= 4)
+        if (GetEffectiveLength(cleanCandidate) < 4 || GetEffectiveLength(cleanTarget) < 4)
+            return false;
+
+        if (cleanCandidate.Equals(cleanTarget, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string compactCand = cleanCandidate.Replace(" ", "");
+        string compactTarget = cleanTarget.Replace(" ", "");
+        if (GetEffectiveLength(compactCand) >= 5 && compactCand.Equals(compactTarget, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Check if candidate starts with target + space (e.g., "Google Chrome Beta" vs "Google Chrome")
+        if (cleanCandidate.StartsWith(cleanTarget + " ", StringComparison.OrdinalIgnoreCase))
         {
-            if (cleanCandidate.Equals(cleanTarget, StringComparison.OrdinalIgnoreCase))
-                return true;
+            string suffix = cleanCandidate.Substring(cleanTarget.Length).Trim();
+            string[] suffixWords = suffix.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-            // Candidate contains the full target name (e.g. candidate "Google Chrome Beta" contains target "Google Chrome")
-            if (cleanCandidate.Contains(cleanTarget, StringComparison.OrdinalIgnoreCase))
+            if (suffixWords.All(w => w.All(c => char.IsDigit(c) || c == '.' || c == 'v' || c == 'V')))
+            {
+                confidence = ConfidenceLevel.High;
+                note = "匹配软件名称及版本号";
                 return true;
+            }
 
-            // Compact no-space comparison (e.g. candidate "RevoSharp" vs target "Revo Sharp")
-            string compactCand = cleanCandidate.Replace(" ", "");
-            string compactTarget = cleanTarget.Replace(" ", "");
-            if (compactCand.Length >= 5 && compactCand.Equals(compactTarget, StringComparison.OrdinalIgnoreCase))
+            if (suffixWords.Any(w => SiblingVariantTokens.Contains(w)))
+            {
+                if (!allowSiblingInAdvanced)
+                    return false;
+
+                confidence = ConfidenceLevel.Low;
+                note = $"疑似同系列独立版本 ({suffix})，默认不勾选";
                 return true;
+            }
+
+            if (GetEffectiveLength(cleanTarget) >= 6)
+            {
+                confidence = ConfidenceLevel.Medium;
+                note = "包含完整软件名称前缀";
+                return true;
+            }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Computes effective semantic length where each CJK ideograph counts as 2 characters,
+    /// allowing 2-3 character Chinese software names (e.g. "钉钉", "向日葵") to match accurately while blocking 2-char English substrings.
+    /// </summary>
+    private static int GetEffectiveLength(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        int len = 0;
+        foreach (char c in text)
+        {
+            len += (c >= 0x4E00 && c <= 0x9FFF) ? 2 : 1;
+        }
+        return len;
     }
 
     private static bool IsPublisherNameMatch(string candidate, string publisher)
@@ -460,7 +555,7 @@ public class ResidualScanner
         if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(publisher)) return false;
         string cleanCand = CleanName(candidate);
         string cleanPub = CleanName(publisher);
-        if (cleanCand.Length < 3 || cleanPub.Length < 3) return false;
+        if (GetEffectiveLength(cleanCand) < 3 || GetEffectiveLength(cleanPub) < 3) return false;
 
         return cleanCand.Equals(cleanPub, StringComparison.OrdinalIgnoreCase) ||
                cleanPub.StartsWith(cleanCand + " ", StringComparison.OrdinalIgnoreCase) ||
@@ -509,7 +604,7 @@ public class ResidualScanner
                 try
                 {
                     total += new FileInfo(file).Length;
-                    if (++fileCount > 2500) break; // Cap to keep UI responsive
+                    if (++fileCount > 2500) break;
                 }
                 catch { }
             }

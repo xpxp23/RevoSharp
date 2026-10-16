@@ -13,8 +13,14 @@ public partial class UninstallWaitingDialog
 
     public bool ShouldProceedToScan { get; private set; }
     public bool ForcedByUser { get; private set; }
+    public bool AbortEntireQueue { get; private set; }
 
-    public UninstallWaitingDialog(InstalledApp app, UninstallerRunner runner, bool forceInteractive)
+    public UninstallWaitingDialog(
+        InstalledApp app,
+        UninstallerRunner runner,
+        bool forceInteractive,
+        int currentQueueIndex = 1,
+        int totalQueueCount = 1)
     {
         InitializeComponent();
         _app = app;
@@ -22,8 +28,19 @@ public partial class UninstallWaitingDialog
         _forceInteractive = forceInteractive;
 
         AppNameTextBlock.Text = $"正在卸载【{app.DisplayName}】";
+        if (totalQueueCount > 1)
+        {
+            QueueProgressBadge.Content = $"批量队列 {currentQueueIndex} / {totalQueueCount}";
+            QueueProgressBadge.Visibility = Visibility.Visible;
+            AbortQueueButton.Visibility = Visibility.Visible;
+        }
+
         Loaded += OnLoaded;
-        Closed += (s, e) => _cts.Cancel();
+        Closed += (s, e) =>
+        {
+            _cts.Cancel();
+            _cts.Dispose();
+        };
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -58,6 +75,15 @@ public partial class UninstallWaitingDialog
         ShouldProceedToScan = true;
         _cts.Cancel();
         DialogResult = true;
+        Close();
+    }
+
+    private void OnAbortQueueClick(object sender, RoutedEventArgs e)
+    {
+        AbortEntireQueue = true;
+        ShouldProceedToScan = false;
+        _cts.Cancel();
+        DialogResult = false;
         Close();
     }
 

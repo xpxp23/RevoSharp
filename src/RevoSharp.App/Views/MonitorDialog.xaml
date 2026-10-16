@@ -8,8 +8,8 @@
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
         Title="实时安装监控向导"
-        Height="600" Width="820"
-        MinHeight="460" MinWidth="640"
+        Height="620" Width="860"
+        MinHeight="480" MinWidth="680"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -34,12 +34,12 @@
 
         <!-- 1. TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="实时安装监控向导 (ETW 内核级追踪 + 注册表差分)"
+                     Title="实时安装监控向导 (ETW 内核级追踪 + KCB 注册表键/值差分)"
                      ShowMaximize="False"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Record24}" />
 
-        <!-- 2. Configuration Card (Fixed IsEnabled binding with InverseBoolConverter) -->
+        <!-- 2. Configuration Card -->
         <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,12" Padding="16,12" CornerRadius="8">
             <StackPanel>
                 <Grid Margin="0,0,0,8">
@@ -87,13 +87,13 @@
                         <TextBlock Text="已捕获新建/写入文件：" FontWeight="SemiBold" VerticalAlignment="Center" />
                         <ui:Badge Content="{Binding CapturedFiles}" Appearance="Primary" Margin="6,0,24,0" />
 
-                        <TextBlock Text="已捕获新建注册表项：" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <TextBlock Text="已捕获注册表键/值变更：" FontWeight="SemiBold" VerticalAlignment="Center" />
                         <ui:Badge Content="{Binding CapturedRegistry}" Appearance="Success" Margin="6,0,0,0" />
                     </StackPanel>
 
                     <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Visibility="{Binding IsMonitoring, Converter={StaticResource BoolToVis}}">
                         <ui:ProgressRing Width="18" Height="18" IsIndeterminate="True" Margin="0,0,8,0" />
-                        <TextBlock Text="ETW 内核会话监听中 (已自动过滤系统只读文件)..." Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" FontSize="12" />
+                        <TextBlock Text="ETW 内核监听中 (含 msiexec 服务与 KCB 句柄追踪)..." Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" FontSize="12" />
                     </StackPanel>
                 </Grid>
 
@@ -120,13 +120,20 @@
                            TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusText}" />
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <ui:Button Content="关闭" Margin="0,0,10,0" Click="OnCloseClick" />
+                    <ui:Button Content="关闭" Margin="0,0,8,0" Click="OnCloseClick" />
 
                     <ui:Button Content="开始监视安装"
                                Icon="{ui:SymbolIcon Play24}"
                                Appearance="Primary"
                                Command="{Binding StartMonitoringCommand}"
                                Visibility="{Binding IsMonitoring, Converter={StaticResource InvBoolToVis}}" />
+
+                    <ui:Button Content="试运行新软件 (捕获首次启动配置)"
+                               Icon="{ui:SymbolIcon Rocket24}"
+                               Margin="0,0,8,0"
+                               Command="{Binding LaunchDetectedAppCommand}"
+                               Visibility="{Binding IsMonitoring, Converter={StaticResource BoolToVis}}"
+                               ToolTip="安装向导完成后点击此按钮启动一次新软件再关闭，可将首次运行生成的 AppData 与注册表一并记入日志" />
 
                     <ui:Button Content="完成安装并保存日志"
                                Icon="{ui:SymbolIcon Checkmark24}"

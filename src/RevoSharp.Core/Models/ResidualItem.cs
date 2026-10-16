@@ -12,6 +12,9 @@ public class ResidualItem : INotifyPropertyChanged
     public ResidualCategory Category { get; init; } = ResidualCategory.File;
     public required string Path { get; init; }
     public string? ValueName { get; init; }
+    public string? ValuePreview { get; init; }
+    public string? TaskSchedulerName { get; init; }
+    public bool? Is64BitRegistryView { get; init; }
     public required ConfidenceLevel Confidence { get; init; }
     public required string Reason { get; init; }
     public long SizeInBytes { get; init; }
@@ -29,9 +32,17 @@ public class ResidualItem : INotifyPropertyChanged
         }
     }
 
-    public string FullDisplayPath => string.IsNullOrEmpty(ValueName)
-        ? Path
-        : $"{Path}  ➔  [{ValueName}]";
+    public string FullDisplayPath
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(ValueName))
+                return Path;
+            return string.IsNullOrEmpty(ValuePreview)
+                ? $"{Path}  ➔  [{ValueName}]"
+                : $"{Path}  ➔  [{ValueName}] = {ValuePreview}";
+        }
+    }
 
     public string DisplayIcon => Category switch
     {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 using RevoSharp.Core.Models;
@@ -9,17 +10,29 @@ namespace RevoSharp.Engine.Execution;
 
 public class UninstallerRunner
 {
-    private static readonly HashSet<string> IgnoredProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>
+    /// Browser and OS shell processes that should never be tracked as part of an uninstaller tree.
+    /// </summary>
+    private static readonly HashSet<string> ExcludedShellProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe",
-        "iexplore.exe", "explorer.exe", "cmd.exe", "powershell.exe",
-        "conhost.exe", "rundll32.exe", "dllhost.exe", "taskhostw.exe", "svchost.exe"
+        "iexplore.exe", "explorer.exe", "dllhost.exe", "taskhostw.exe", "svchost.exe"
+    };
+
+    /// <summary>
+    /// Script/command hosts that ARE tracked in the parent-child tree so grandchild uninstallers
+    /// spawned by cmd/powershell/rundll32 are never lost, but do not block completion once idle if they are conhost.
+    /// </summary>
+    private static readonly HashSet<string> AuxiliaryHostProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "conhost.exe"
     };
 
     private static readonly Regex MsiInstallFlagRegex = new(@"(?<=\s|^)[/-][iI](?=\s*\{|\s+"")", RegexOptions.Compiled);
 
-    #region Toolhelp32 Interop
+    #region Toolhelp32 & Fast Process Path Interop
     private const uint TH32CS_SNAPPROCESS = 0x00000002;
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     public struct PROCESSENTRY32
@@ -47,6 +60,12 @@ public class UninstallerRunner
     private static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
     #endregion
 
@@ -68,15 +87,15 @@ public class UninstallerRunner
         {
             (commandToRun, arguments) = ParseCommand(app.UninstallString);
 
+            // Always convert MSI /I{GUID} to /X{GUID} so interactive mode launches direct Uninstall instead of Modify/Repair,
+            // and silent mode performs silent uninstall instead of silent repair!
+            if (commandToRun.Contains("msiexec", StringComparison.OrdinalIgnoreCase))
+            {
+                arguments = MsiInstallFlagRegex.Replace(arguments, "/X");
+            }
+
             if (!forceInteractive)
             {
-                // For MSI packages, /I{GUID} must be converted to /X{GUID} before adding /qn,
-                // otherwise msiexec performs a silent repair/reinstall instead of uninstalling!
-                if (commandToRun.Contains("msiexec", StringComparison.OrdinalIgnoreCase))
-                {
-                    arguments = MsiInstallFlagRegex.Replace(arguments, "/X");
-                }
-
                 string smartArgs = InferSilentArguments(commandToRun, arguments);
                 if (!string.IsNullOrEmpty(smartArgs))
                 {
@@ -117,8 +136,10 @@ public class UninstallerRunner
                 int initialPid = initialProcess.Id;
                 onStatusUpdate?.Invoke($"卸载引导进程已启动 (PID: {initialPid})");
 
-                var activePids = new HashSet<int> { initialPid };
+                // trackedTreePids includes intermediate script hosts (cmd/powershell/rundll32) so grandchild uninstallers are caught
+                var trackedTreePids = new HashSet<int> { initialPid };
                 int zeroCountGrace = 0;
+                bool isFirstPoll = true;
 
                 string? validInstallDirPrefix = null;
                 if (!string.IsNullOrWhiteSpace(app.InstallLocation) &&
@@ -130,74 +151,80 @@ public class UninstallerRunner
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    await Task.Delay(500, cancellationToken);
+                    // Short 150ms initial poll catches fast bootstrapper stubs (_iu14D2N.tmp / Au_.exe) before they exit
+                    await Task.Delay(isFirstPoll ? 150 : 450, cancellationToken);
+                    isFirstPoll = false;
                     if (cancellationToken.IsCancellationRequested) break;
 
                     var snapshot = TakeProcessSnapshot();
 
-                    // 1. Detect new children spawned by currently tracked PIDs
-                    foreach (var entry in snapshot)
+                    // 1. Multi-pass transitive closure to catch child + grandchild processes spawned in the same interval
+                    bool addedNewChild;
+                    do
                     {
-                        if (activePids.Contains((int)entry.th32ParentProcessID))
+                        addedNewChild = false;
+                        foreach (var entry in snapshot)
                         {
                             int childPid = (int)entry.th32ProcessID;
-                            if (!IgnoredProcessNames.Contains(entry.szExeFile) && activePids.Add(childPid))
+                            int parentPid = (int)entry.th32ParentProcessID;
+                            if (childPid > 4 && trackedTreePids.Contains(parentPid) && !trackedTreePids.Contains(childPid))
                             {
-                                onStatusUpdate?.Invoke($"检测到衍生子卸载进程: {entry.szExeFile} (PID: {childPid})");
+                                if (!ExcludedShellProcesses.Contains(entry.szExeFile))
+                                {
+                                    trackedTreePids.Add(childPid);
+                                    addedNewChild = true;
+                                    if (!AuxiliaryHostProcesses.Contains(entry.szExeFile))
+                                    {
+                                        onStatusUpdate?.Invoke($"检测到衍生卸载子进程: {entry.szExeFile} (PID: {childPid})");
+                                    }
+                                }
                             }
                         }
-                    }
+                    } while (addedNewChild);
 
-                    // 2. Detect any process running directly from app.InstallLocation (with strict trailing slash boundary)
+                    // 2. Detect any process running directly from app.InstallLocation using fast Win32 QueryFullProcessImageName
+                    // (Avoids Process.MainModule cross-bitness Win32Exception storms)
                     if (!string.IsNullOrEmpty(validInstallDirPrefix))
                     {
                         foreach (var entry in snapshot)
                         {
-                            if (IgnoredProcessNames.Contains(entry.szExeFile)) continue;
-                            if (activePids.Contains((int)entry.th32ProcessID)) continue;
+                            int pid = (int)entry.th32ProcessID;
+                            if (pid <= 4 || trackedTreePids.Contains(pid)) continue;
+                            if (ExcludedShellProcesses.Contains(entry.szExeFile)) continue;
 
-                            try
+                            string? exePath = TryGetProcessImagePathFast((uint)pid);
+                            if (!string.IsNullOrEmpty(exePath) &&
+                                exePath.StartsWith(validInstallDirPrefix, StringComparison.OrdinalIgnoreCase))
                             {
-                                using var p = Process.GetProcessById((int)entry.th32ProcessID);
-                                string? modulePath = p.MainModule?.FileName;
-                                if (!string.IsNullOrEmpty(modulePath) &&
-                                    modulePath.StartsWith(validInstallDirPrefix, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    activePids.Add((int)entry.th32ProcessID);
-                                    onStatusUpdate?.Invoke($"检测到安装目录活动进程: {entry.szExeFile} (PID: {entry.th32ProcessID})");
-                                }
+                                trackedTreePids.Add(pid);
+                                onStatusUpdate?.Invoke($"检测到安装目录活动进程: {entry.szExeFile} (PID: {pid})");
                             }
-                            catch { }
                         }
                     }
 
-                    // 3. Filter out exited processes (properly disposing Process handles)
+                    // 3. Filter active processes using the snapshot directly + fast alive check
+                    var snapshotPidMap = snapshot.ToDictionary(e => (int)e.th32ProcessID, e => e.szExeFile);
                     var stillRunning = new HashSet<int>();
-                    var runningNames = new List<string>();
+                    var meaningfulRunningNames = new List<string>();
 
-                    foreach (int pid in activePids)
+                    foreach (int pid in trackedTreePids)
                     {
-                        try
+                        if (snapshotPidMap.TryGetValue(pid, out string? exeName))
                         {
-                            using var p = Process.GetProcessById(pid);
-                            if (!p.HasExited)
+                            stillRunning.Add(pid);
+                            if (!AuxiliaryHostProcesses.Contains(exeName))
                             {
-                                stillRunning.Add(pid);
-                                runningNames.Add($"{p.ProcessName}.exe (PID: {pid})");
+                                meaningfulRunningNames.Add($"{exeName} (PID: {pid})");
                             }
-                        }
-                        catch
-                        {
-                            // Process already exited
                         }
                     }
 
-                    activePids = stillRunning;
+                    trackedTreePids = stillRunning;
 
-                    if (activePids.Count > 0)
+                    if (meaningfulRunningNames.Count > 0)
                     {
                         zeroCountGrace = 0;
-                        string processListStr = string.Join(", ", runningNames.Take(3));
+                        string processListStr = string.Join(", ", meaningfulRunningNames.Take(3));
                         onStatusUpdate?.Invoke($"等待卸载程序完成: {processListStr}");
                     }
                     else
@@ -229,8 +256,25 @@ public class UninstallerRunner
         }, cancellationToken);
     }
 
+    public static string? TryGetProcessImagePathFast(uint pid)
+    {
+        IntPtr hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (hProc == IntPtr.Zero) return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            uint size = (uint)sb.Capacity;
+            return QueryFullProcessImageName(hProc, 0, sb, ref size) ? sb.ToString() : null;
+        }
+        finally
+        {
+            CloseHandle(hProc);
+        }
+    }
+
     /// <summary>
     /// Checks whether the application's Registry Uninstall entry still exists (e.g., if user clicked Cancel in the wizard).
+    /// Accurately handles both UWP Store packages and 64/32-bit desktop apps.
     /// </summary>
     public static bool IsAppRegistryEntryStillPresent(InstalledApp app)
     {
@@ -251,23 +295,25 @@ public class UninstallerRunner
                 _ => RegistryHive.LocalMachine
             };
 
-            foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            if (app.IsWindowsApp)
             {
-                try
-                {
-                    using var baseKey = RegistryKey.OpenBaseKey(hive, view);
-                    using var key = baseKey.OpenSubKey(subKey);
-                    if (key != null && key.GetValue("DisplayName") != null)
-                    {
-                        return true;
-                    }
-                }
-                catch { }
+                using var baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Default);
+                using var uwpKey = baseKey.OpenSubKey(subKey);
+                return uwpKey != null;
             }
-        }
-        catch { }
 
-        return false;
+            var targetView = subKey.Contains(@"WOW6432Node\", StringComparison.OrdinalIgnoreCase)
+                ? RegistryView.Registry64
+                : (app.Is64Bit ? RegistryView.Registry64 : RegistryView.Registry32);
+
+            using var regBase = RegistryKey.OpenBaseKey(hive, targetView);
+            using var key = regBase.OpenSubKey(subKey);
+            return key != null && key.GetValue("DisplayName") != null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static List<int> GetDescendantPids(int rootPid)
@@ -391,7 +437,7 @@ public class UninstallerRunner
             return string.Empty;
         }
 
-        if (lowerFile.Contains("uninstall.exe"))
+        if (lowerFile.Contains("uninstall.exe") || lowerFile.Contains("uninst.exe"))
         {
             if (!lowerArgs.Contains("/s"))
             {

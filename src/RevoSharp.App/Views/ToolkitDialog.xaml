@@ -2,12 +2,18 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         Title="系统工具箱与备份管理中心 (Autorun / Backups / Trace Logs)"
-        Height="640" Width="980"
-        MinHeight="480" MinWidth="780"
+        Height="660" Width="1040"
+        MinHeight="500" MinWidth="820"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
+
+    <ui:FluentWindow.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+    </ui:FluentWindow.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -17,7 +23,7 @@
         </Grid.RowDefinitions>
 
         <ui:TitleBar Grid.Row="0"
-                     Title="RevoSharp 附加工具箱：开机自启管理 / 备份还原中心 / 已追踪安装日志"
+                     Title="RevoSharp 附加工具箱：开机自启管理 / 多级备份还原中心 / 已追踪安装日志"
                      ShowMaximize="True"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Shield24}" />
@@ -33,11 +39,13 @@
                         </Grid.RowDefinitions>
 
                         <Grid Grid.Row="0" Margin="0,0,0,10">
-                            <TextBlock Text="全面管控注册表 Run / RunOnce 与启动文件夹驻留项（移除前自动备份）"
+                            <TextBlock Text="全面管控注册表 Run/RunOnce、启动文件夹与计划任务自启项（支持无损启用/禁用切换与自动备份移除）"
                                        VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
                             <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                                <ui:Button Content="启用 / 禁用切换" Icon="{ui:SymbolIcon Power24}" Appearance="Primary" Margin="0,0,8,0" Click="OnToggleAutostartClick"
+                                           ToolTip="与 Windows 任务管理器同步无损切换启用/禁用状态，不删除原始条目" />
                                 <ui:Button Content="打开所在位置" Icon="{ui:SymbolIcon FolderOpen24}" Margin="0,0,8,0" Click="OnOpenAutostartLocationClick" />
-                                <ui:Button Content="备份并移除选中自启项" Icon="{ui:SymbolIcon Delete24}" Appearance="Danger" Margin="0,0,8,0" Click="OnRemoveAutostartClick" />
+                                <ui:Button Content="备份并移除选中项" Icon="{ui:SymbolIcon Delete24}" Appearance="Danger" Margin="0,0,8,0" Click="OnRemoveAutostartClick" />
                                 <ui:Button Content="刷新" Icon="{ui:SymbolIcon ArrowClockwise24}" Click="OnRefreshAutostartClick" />
                             </StackPanel>
                         </Grid>
@@ -45,9 +53,19 @@
                         <ui:DataGrid x:Name="AutostartGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                                      CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
                             <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="状态" Width="85" SortMemberPath="IsEnabled">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Grid VerticalAlignment="Center">
+                                                <ui:Badge Content="已启用" Appearance="Success" Visibility="{Binding IsEnabled, Converter={StaticResource BoolToVis}}" />
+                                                <ui:Badge Content="已禁用" Appearance="Caution" Visibility="{Binding IsEnabled, Converter={StaticResource InvBoolToVis}}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="启动项名称" Binding="{Binding Name}" Width="180" />
                                 <DataGridTextColumn Header="驻留位置类型" Binding="{Binding LocationType}" Width="140" />
-                                <DataGridTextColumn Header="发行商" Binding="{Binding Publisher}" Width="150" />
+                                <DataGridTextColumn Header="发行商" Binding="{Binding Publisher}" Width="140" />
                                 <DataGridTextColumn Header="启动命令行 / 目标路径" Binding="{Binding Command}" Width="*" />
                             </DataGrid.Columns>
                         </ui:DataGrid>
@@ -65,11 +83,11 @@
                         </Grid.RowDefinitions>
 
                         <Grid Grid.Row="0" Margin="0,0,0,10">
-                            <TextBlock Text="每次清理残留自动导出的注册表备份档案，支持一键导入还原至系统注册表"
+                            <TextBlock Text="完整记录卸载清理与自启管理的注册表/计划任务备份档案，支持一键导入还原至系统"
                                        VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
                             <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
                                 <ui:Button Content="打开备份目录" Icon="{ui:SymbolIcon FolderOpen24}" Margin="0,0,8,0" Click="OnOpenBackupFolderClick" />
-                                <ui:Button Content="一键还原选中注册表备份" Icon="{ui:SymbolIcon ArrowClockwise24}" Appearance="Primary" Margin="0,0,8,0" Click="OnRestoreBackupClick" />
+                                <ui:Button Content="一键还原选中备份档案" Icon="{ui:SymbolIcon ArrowClockwise24}" Appearance="Primary" Margin="0,0,8,0" Click="OnRestoreBackupClick" />
                                 <ui:Button Content="删除备份记录" Icon="{ui:SymbolIcon Delete24}" Appearance="Danger" Click="OnDeleteBackupClick" />
                             </StackPanel>
                         </Grid>
@@ -77,8 +95,8 @@
                         <ui:DataGrid x:Name="BackupGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
                                      CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="关联卸载软件" Binding="{Binding AppName}" Width="220" />
-                                <DataGridTextColumn Header="备份时间" Binding="{Binding CreatedTimeDisplay}" Width="160" />
+                                <DataGridTextColumn Header="关联项目名称" Binding="{Binding AppName}" Width="220" />
+                                <DataGridTextColumn Header="备份时间" Binding="{Binding CreatedTimeDisplay}" Width="155" />
                                 <DataGridTextColumn Header="备份内容摘要" Binding="{Binding SummaryText}" Width="*" />
                             </DataGrid.Columns>
                         </ui:DataGrid>
@@ -96,11 +114,13 @@
                         </Grid.RowDefinitions>
 
                         <Grid Grid.Row="0" Margin="0,0,0,10">
-                            <TextBlock Text="管理由 ETW 安装监控向导录制的 .revolog.json.gz 日志，支持直接基于日志执行反向清理"
+                            <TextBlock Text="管理由 ETW 安装监控录制的 .revolog.json.gz 日志，支持导入/导出共享及基于日志反向清理"
                                        VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
                             <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
-                                <ui:Button Content="打开日志目录" Icon="{ui:SymbolIcon FolderOpen24}" Margin="0,0,8,0" Click="OnOpenLogFolderClick" />
-                                <ui:Button Content="基于此日志执行反向清理" Icon="{ui:SymbolIcon Broom24}" Appearance="Primary" Margin="0,0,8,0" Click="OnCleanByTraceLogClick" />
+                                <ui:Button Content="导入日志..." Icon="{ui:SymbolIcon ArrowDownload24}" Margin="0,0,8,0" Click="OnImportTraceLogClick" />
+                                <ui:Button Content="导出报告 (.txt)" Icon="{ui:SymbolIcon DocumentText24}" Margin="0,0,8,0" Click="OnExportTraceLogReportClick" />
+                                <ui:Button Content="打开目录" Icon="{ui:SymbolIcon FolderOpen24}" Margin="0,0,8,0" Click="OnOpenLogFolderClick" />
+                                <ui:Button Content="基于此日志反向清理" Icon="{ui:SymbolIcon Broom24}" Appearance="Primary" Margin="0,0,8,0" Click="OnCleanByTraceLogClick" />
                                 <ui:Button Content="删除日志" Icon="{ui:SymbolIcon Delete24}" Appearance="Danger" Click="OnDeleteTraceLogClick" />
                             </StackPanel>
                         </Grid>
@@ -109,7 +129,7 @@
                                      CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="监控软件名称" Binding="{Binding AppName}" Width="220" />
-                                <DataGridTextColumn Header="安装包路径" Binding="{Binding InstallerPath}" Width="240" />
+                                <DataGridTextColumn Header="安装包路径" Binding="{Binding InstallerPath}" Width="230" />
                                 <DataGridTextColumn Header="捕获详情" Binding="{Binding SummaryText}" Width="*" />
                             </DataGrid.Columns>
                         </ui:DataGrid>

@@ -6,7 +6,7 @@
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         mc:Ignorable="d"
         Title="正在执行卸载"
-        Height="360" Width="640"
+        Height="370" Width="660"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         ExtendsContentIntoTitleBar="True"
@@ -36,7 +36,14 @@
                 </Grid.RowDefinitions>
 
                 <StackPanel Grid.Row="0" Margin="0,0,0,16">
-                    <TextBlock x:Name="AppNameTextBlock" Text="正在卸载应用程序" FontSize="16" FontWeight="SemiBold" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="AppNameTextBlock" Grid.Column="0" Text="正在卸载应用程序" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <ui:Badge x:Name="QueueProgressBadge" Grid.Column="1" Content="队列 1/1" Appearance="Primary" Visibility="Collapsed" />
+                    </Grid>
                     <TextBlock Text="请在弹出的官方卸载向导窗口中按提示操作，RevoSharp 正在后台跟踪其实际执行状态。"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" Margin="0,4,0,0" />
                 </StackPanel>
@@ -51,7 +58,7 @@
                         <ui:ProgressRing Grid.Column="0" Width="28" Height="28" IsIndeterminate="True" Margin="0,0,12,0" />
                         <StackPanel Grid.Column="1" VerticalAlignment="Center">
                             <TextBlock x:Name="StatusTextBlock" Text="正在启动并等待卸载引导程序..." FontSize="13" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="实时监控中：已关联子进程树与安装目录活动" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="11" Margin="0,2,0,0" />
+                            <TextBlock Text="实时监控中：已关联多层衍生子进程树与安装目录活动" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="11" Margin="0,2,0,0" />
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -68,8 +75,16 @@
         <!-- 3. Bottom Action Bar -->
         <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" Padding="16,12">
             <Grid>
+                <ui:Button x:Name="AbortQueueButton"
+                           Content="中止全部后续队列"
+                           Appearance="Danger"
+                           Icon="{ui:SymbolIcon Stop24}"
+                           HorizontalAlignment="Left"
+                           Visibility="Collapsed"
+                           Click="OnAbortQueueClick" />
+
                 <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
-                    <ui:Button Content="取消" Margin="0,0,10,0" Click="OnCancelClick" />
+                    <ui:Button Content="跳过当前项" Margin="0,0,10,0" Click="OnCancelClick" />
                     <ui:Button Content="原厂已完成，立即扫描残留"
                                Appearance="Primary"
                                Icon="{ui:SymbolIcon ArrowRight24}"

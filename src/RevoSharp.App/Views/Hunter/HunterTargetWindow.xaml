@@ -7,13 +7,17 @@
         Background="Transparent"
         Topmost="True"
         ShowInTaskbar="False"
+        AllowDrop="True"
+        Drop="OnReticleFileDrop"
+        DragOver="OnReticleDragOver"
         Width="96"
         Height="96"
         WindowStartupLocation="Manual"
-        ToolTip="猎犬模式准星&#x0a;• 左键长按拖拽并释放到任意窗口/弹窗进行猎杀瞄准&#x0a;• 右键长按拖动可调整准星停靠位置&#x0a;• 双击返回主界面 | 右键单击打开菜单">
+        ToolTip="猎犬模式准星&#x0a;• 左键长按拖拽并释放到任意窗口/弹窗进行猎杀瞄准&#x0a;• 支持将桌面快捷方式 (.lnk) 或程序文件直接拖入准星&#x0a;• 右键长按拖动（或 Shift+左键拖动）可调整准星停靠位置&#x0a;• 双击返回主界面 | 右键单击打开菜单">
 
     <Window.ContextMenu>
-        <ContextMenu>
+        <ContextMenu x:Name="ReticleContextMenu">
+            <MenuItem Header="选择桌面快捷方式或文件进行猎杀..." Click="OnSelectFileTargetClick" />
             <MenuItem Header="返回主界面" Click="OnRestoreMainClick" />
             <Separator />
             <MenuItem Header="不透明度 100%" Click="OnOpacity100Click" />

@@ -1,7 +1,9 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using Microsoft.Win32;
 using RevoSharp.App.ViewModels;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Execution;
@@ -21,8 +23,14 @@ public partial class HunterTargetWindow : Window
 
     private readonly TargetHighlightOverlay _overlay;
     private bool _isAiming;
+    private bool _isRightButtonDown;
+    private bool _isRightDragging;
     private bool _isClickThroughApplied;
     private Point _dragStartPoint;
+    private POINT _rightDragStartScreenPt;
+    private double _rightDragStartLeft;
+    private double _rightDragStartTop;
+    private IntPtr _lastInspectedHwnd = IntPtr.Zero;
     private HunterTargetInfo? _currentTarget;
     private HunterActionHud? _currentHud;
 
@@ -109,15 +117,48 @@ public partial class HunterTargetWindow : Window
 
         _isAiming = true;
         _currentTarget = null;
+        _lastInspectedHwnd = IntPtr.Zero;
         _dragStartPoint = e.GetPosition(this);
         CaptureMouse();
         Cursor = Cursors.Cross;
+    }
+
+    protected override void OnPreviewMouseRightButtonDown(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseRightButtonDown(e);
+        _isRightButtonDown = true;
+        _isRightDragging = false;
+        GetCursorPos(out _rightDragStartScreenPt);
+        _rightDragStartLeft = Left;
+        _rightDragStartTop = Top;
+        CaptureMouse();
+        e.Handled = true;
     }
 
     protected override void OnPreviewMouseMove(MouseEventArgs e)
     {
         base.OnPreviewMouseMove(e);
 
+        // 1. Handle Right-Button Drag to reposition reticle smoothly (matching ToolTip!)
+        if (_isRightButtonDown && e.RightButton == MouseButtonState.Pressed)
+        {
+            GetCursorPos(out POINT rPt);
+            double dxPhysical = rPt.X - _rightDragStartScreenPt.X;
+            double dyPhysical = rPt.Y - _rightDragStartScreenPt.Y;
+
+            if (_isRightDragging || Math.Sqrt(dxPhysical * dxPhysical + dyPhysical * dyPhysical) > 5)
+            {
+                _isRightDragging = true;
+                var source = PresentationSource.FromVisual(this);
+                double dpiX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+                double dpiY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
+                Left = _rightDragStartLeft + (dxPhysical / dpiX);
+                Top = _rightDragStartTop + (dyPhysical / dpiY);
+            }
+            return;
+        }
+
+        // 2. Handle Left-Button Aiming Drag with HWND Caching (120+ FPS zero-lag aiming)
         if (!_isAiming) return;
 
         GetCursorPos(out POINT pt);
@@ -126,21 +167,32 @@ public partial class HunterTargetWindow : Window
 
         if (e.LeftButton == MouseButtonState.Pressed && dist > 5)
         {
-            // Enable WS_EX_TRANSPARENT while dragging so WindowFromPoint passes right through the reticle!
             SetClickThrough(true);
 
-            var target = _hunterService.InspectPoint(pt.X, pt.Y, _installedApps);
             var thisHwnd = new WindowInteropHelper(this).Handle;
             var overlayHwnd = new WindowInteropHelper(_overlay).Handle;
+            IntPtr candidateHwnd = _hunterService.GetRootWindowAtPoint(pt.X, pt.Y);
 
-            if (target != null && target.WindowHandle != thisHwnd && target.WindowHandle != overlayHwnd)
+            if (candidateHwnd != IntPtr.Zero && candidateHwnd != thisHwnd && candidateHwnd != overlayHwnd)
             {
-                _currentTarget = target;
-                var rect = _hunterService.GetWindowBoundingRect(target.WindowHandle);
-                _overlay.ShowAt(rect.Left, rect.Top, rect.Width, rect.Height, target.IsSystemCritical);
+                // Only run process/version inspection when the cursor crosses into a DIFFERENT window handle!
+                // Defer expensive COM/Registry autostart scan until MouseLeftButtonUp!
+                if (candidateHwnd != _lastInspectedHwnd)
+                {
+                    _lastInspectedHwnd = candidateHwnd;
+                    _currentTarget = _hunterService.InspectWindowHandle(candidateHwnd, _installedApps, includeDeepAutostartScan: false);
+                }
+
+                if (_currentTarget != null)
+                {
+                    var rect = _hunterService.GetWindowBoundingRect(_currentTarget.WindowHandle);
+                    _overlay.ShowAt(rect.Left, rect.Top, rect.Width, rect.Height, _currentTarget.IsSystemCritical);
+                }
             }
             else
             {
+                _lastInspectedHwnd = IntPtr.Zero;
+                _currentTarget = null;
                 _overlay.Hide();
             }
 
@@ -152,12 +204,31 @@ public partial class HunterTargetWindow : Window
         }
     }
 
+    protected override void OnPreviewMouseRightButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseRightButtonUp(e);
+        if (!_isRightButtonDown) return;
+
+        bool wasDragging = _isRightDragging;
+        _isRightButtonDown = false;
+        _isRightDragging = false;
+        ReleaseMouseCapture();
+
+        if (!wasDragging && ReticleContextMenu != null)
+        {
+            ReticleContextMenu.PlacementTarget = this;
+            ReticleContextMenu.IsOpen = true;
+        }
+        e.Handled = true;
+    }
+
     protected override void OnPreviewMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseLeftButtonUp(e);
 
         if (!_isAiming) return;
         _isAiming = false;
+        _lastInspectedHwnd = IntPtr.Zero;
         SetClickThrough(false);
         ReleaseMouseCapture();
         Cursor = Cursors.Hand;
@@ -165,6 +236,12 @@ public partial class HunterTargetWindow : Window
 
         if (_currentTarget != null)
         {
+            // Perform deep autostart persistence scan once upon target lock-on
+            if (!_currentTarget.IsSystemCritical)
+            {
+                _hunterService.ScanAutostartPersistence(_currentTarget);
+            }
+
             GetCursorPos(out POINT pt);
             ShowActionHud(_currentTarget, new Point(pt.X, pt.Y));
         }
@@ -174,6 +251,53 @@ public partial class HunterTargetWindow : Window
     {
         base.OnPreviewMouseDoubleClick(e);
         RestoreMainWindow();
+    }
+
+    private void OnReticleDragOver(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            e.Effects = DragDropEffects.Link;
+        }
+        else
+        {
+            e.Effects = DragDropEffects.None;
+        }
+        e.Handled = true;
+    }
+
+    private void OnReticleFileDrop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+        {
+            InspectFileAndOpenHud(files[0]);
+        }
+    }
+
+    private void OnSelectFileTargetClick(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "选择桌面快捷方式 (.lnk) 或目标程序文件 (.exe)",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+            Filter = "快捷方式或程序 (*.lnk;*.exe)|*.lnk;*.exe|所有文件 (*.*)|*.*"
+        };
+
+        if (dlg.ShowDialog() == true && File.Exists(dlg.FileName))
+        {
+            InspectFileAndOpenHud(dlg.FileName);
+        }
+    }
+
+    private void InspectFileAndOpenHud(string filePath)
+    {
+        var info = _hunterService.InspectFileOrShortcut(filePath, _installedApps);
+        if (info != null)
+        {
+            GetCursorPos(out POINT pt);
+            ShowActionHud(info, new Point(pt.X, pt.Y));
+        }
     }
 
     private void ShowActionHud(HunterTargetInfo target, Point screenPoint)

@@ -18,7 +18,8 @@ public static class ProfileBuilder
         "microsoft", "windows", "installer", "setup", "uninstaller", "update", "patch",
         "corporation", "software", "edition", "system", "package", "application",
         "tool", "client", "service", "desktop", "portable", "x86", "x64", "64-bit", "32-bit",
-        "inc", "ltd", "co", "studio", "pro", "free", "version", "official", "app", "driver"
+        "inc", "ltd", "co", "studio", "pro", "free", "version", "official", "app", "driver",
+        "官方版", "正式版", "客户端", "安装程序", "软件", "有限公司", "科技", "网络"
     };
 
     private static readonly HashSet<string> GenericExecutableNames = new(StringComparer.OrdinalIgnoreCase)
@@ -84,10 +85,13 @@ public static class ProfileBuilder
         }
 
         var tokens = new List<string>();
-        foreach (var word in (app.DisplayName + " " + app.Publisher).Split([' ', '_', '-', '.', '(', ')', '[', ']'], StringSplitOptions.RemoveEmptyEntries))
+        foreach (var word in (app.DisplayName + " " + app.Publisher).Split([' ', '_', '-', '.', '(', ')', '[', ']', '（', '）'], StringSplitOptions.RemoveEmptyEntries))
         {
             string clean = word.Trim();
-            if (clean.Length >= 4 && !StopWords.Contains(clean) && !int.TryParse(clean, out _))
+            bool hasCjk = clean.Any(c => c >= 0x4E00 && c <= 0x9FFF);
+            int minLen = hasCjk ? 2 : 4;
+
+            if (clean.Length >= minLen && !StopWords.Contains(clean) && !int.TryParse(clean, out _))
             {
                 if (!tokens.Contains(clean, StringComparer.OrdinalIgnoreCase))
                 {

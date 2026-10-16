@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
+using RevoSharp.Engine.Safety;
 
 namespace RevoSharp.Engine.Scanning;
 
@@ -13,13 +14,19 @@ public class ReverseReferenceScanner
             return;
         }
 
-        // 1. Scan COM Classes (CLSID & TypeLib)
-        ScanClsidHives(profile, results);
+        var matchedClsids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(profile.GuidString))
+        {
+            matchedClsids.Add(profile.GuidString);
+        }
+
+        // 1. Scan COM Classes (CLSID & TypeLib) and collect matched CLSIDs for downstream ShellExtension lookup
+        ScanClsidHives(profile, matchedClsids, results);
 
         // 2. Scan Windows Services
         ScanServices(profile, results);
 
-        // 3. Scan App Paths
+        // 3. Scan App Paths across both 64-bit and 32-bit views
         ScanAppPaths(profile, results);
 
         // 4. Scan Firewall Rules
@@ -28,26 +35,26 @@ public class ReverseReferenceScanner
         // 5. Scan MuiCache
         ScanMuiCache(profile, results);
 
-        // 6. Scan Windows Scheduled Tasks (Revo Pro parity)
+        // 6. Scan Windows Scheduled Tasks (with TaskSchedulerName for clean schtasks unregistration)
         ScanScheduledTasks(profile, results);
 
-        // 7. Scan MSI Installer Metadata & Folders (Revo Pro parity)
+        // 7. Scan MSI Installer Metadata & Folders
         ScanMsiMetadata(profile, results);
 
-        // 8. Scan Explorer Shell Extensions (Revo Pro parity)
-        ScanShellExtensions(profile, results);
+        // 8. Scan Explorer Shell Extensions & ContextMenuHandlers using collected CLSIDs
+        ScanShellExtensions(profile, matchedClsids, results);
     }
 
-    private static void ScanClsidHives(TargetProfile profile, List<ResidualItem> results)
+    private static void ScanClsidHives(TargetProfile profile, HashSet<string> matchedClsids, List<ResidualItem> results)
     {
-        var clsidRoots = new[]
+        var clsidRoots = new (RegistryHive Hive, RegistryView View, string SubPath, string DisplayRoot, bool Is64View)[]
         {
-            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Classes\CLSID", "HKLM"),
-            (RegistryHive.CurrentUser, RegistryView.Default, @"Software\Classes\CLSID", "HKCU"),
-            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Classes\CLSID", @"HKLM\SOFTWARE\WOW6432Node\Classes\CLSID")
+            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Classes\CLSID", "HKLM", true),
+            (RegistryHive.CurrentUser, RegistryView.Default, @"Software\Classes\CLSID", "HKCU", Environment.Is64BitOperatingSystem),
+            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Classes\CLSID", @"HKLM\SOFTWARE\WOW6432Node\Classes\CLSID", false)
         };
 
-        foreach (var (hive, view, subPath, displayRoot) in clsidRoots)
+        foreach (var (hive, view, subPath, displayRoot, is64View) in clsidRoots)
         {
             try
             {
@@ -70,6 +77,8 @@ public class ReverseReferenceScanner
                             string? serverPath = serverKey.GetValue(string.Empty) as string;
                             if (IsPathMatching(serverPath, profile))
                             {
+                                matchedClsids.Add(clsid);
+
                                 string fullKey = displayRoot.StartsWith("HKLM\\SOFTWARE\\WOW6432Node")
                                     ? $@"{displayRoot}\{clsid}"
                                     : $@"{displayRoot}\{subPath}\{clsid}";
@@ -79,8 +88,9 @@ public class ReverseReferenceScanner
                                     Type = ResidualType.RegistryKey,
                                     Category = ResidualCategory.RegistryKey,
                                     Path = fullKey,
+                                    Is64BitRegistryView = is64View,
                                     Confidence = ConfidenceLevel.High,
-                                    Reason = "反向引用：关联 COM / CLSID 组件死链",
+                                    Reason = $"反向引用：关联 COM / CLSID 组件死链 ({sub})",
                                     IsSelected = true
                                 });
                                 break;
@@ -118,7 +128,9 @@ public class ReverseReferenceScanner
                             Type = ResidualType.RegistryKey,
                             Category = ResidualCategory.Service,
                             ValueName = serviceName,
+                            ValuePreview = imagePath,
                             Path = fullKey,
+                            Is64BitRegistryView = true,
                             Confidence = ConfidenceLevel.High,
                             Reason = $"反向引用：遗留 Windows 服务项 ({serviceName})",
                             IsSelected = true
@@ -133,13 +145,14 @@ public class ReverseReferenceScanner
 
     private static void ScanAppPaths(TargetProfile profile, List<ResidualItem> results)
     {
-        var appPathRoots = new[]
+        var appPathRoots = new (RegistryHive Hive, RegistryView View, string SubPath, string HivePrefix, bool Is64View)[]
         {
-            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths", "HKLM"),
-            (RegistryHive.CurrentUser, RegistryView.Default, @"Software\Microsoft\Windows\CurrentVersion\App Paths", "HKCU")
+            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths", "HKLM", true),
+            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths", @"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths", false),
+            (RegistryHive.CurrentUser, RegistryView.Default, @"Software\Microsoft\Windows\CurrentVersion\App Paths", "HKCU", Environment.Is64BitOperatingSystem)
         };
 
-        foreach (var (hive, view, subPath, hiveName) in appPathRoots)
+        foreach (var (hive, view, subPath, hivePrefix, is64View) in appPathRoots)
         {
             try
             {
@@ -161,12 +174,16 @@ public class ReverseReferenceScanner
                             IsPathMatching(defaultVal, profile) ||
                             IsPathMatching(pathVal, profile))
                         {
-                            string fullKey = $@"{hiveName}\{subPath}\{exeName}";
+                            string fullKey = hivePrefix.StartsWith("HKLM\\SOFTWARE\\WOW6432Node")
+                                ? $@"{hivePrefix}\{exeName}"
+                                : $@"{hivePrefix}\{subPath}\{exeName}";
+
                             ResidualScanner.AddResidualIfUnique(results, new ResidualItem
                             {
                                 Type = ResidualType.RegistryKey,
                                 Category = ResidualCategory.RegistryKey,
                                 Path = fullKey,
+                                Is64BitRegistryView = is64View,
                                 Confidence = ConfidenceLevel.High,
                                 Reason = $"反向引用：App Paths 快捷命令 ({exeName})",
                                 IsSelected = true
@@ -199,6 +216,8 @@ public class ReverseReferenceScanner
                         Category = ResidualCategory.FirewallRule,
                         Path = @"HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules",
                         ValueName = valName,
+                        ValuePreview = RegistryBackup.TryGetRegistryValuePreview(fwKey, valName),
+                        Is64BitRegistryView = true,
                         Confidence = ConfidenceLevel.High,
                         Reason = "反向引用：Windows 防火墙进出站规则",
                         IsSelected = true
@@ -227,6 +246,7 @@ public class ReverseReferenceScanner
                         Category = ResidualCategory.RegistryValue,
                         Path = @"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache",
                         ValueName = valName,
+                        ValuePreview = RegistryBackup.TryGetRegistryValuePreview(muiKey, valName),
                         Confidence = ConfidenceLevel.High,
                         Reason = "反向引用：Explorer 界面显示缓存 (MuiCache)",
                         IsSelected = true
@@ -264,9 +284,10 @@ public class ReverseReferenceScanner
                             Type = ResidualType.File,
                             Category = ResidualCategory.ScheduledTask,
                             Path = taskFile,
+                            TaskSchedulerName = "\\" + relPath,
                             SizeInBytes = ResidualScanner.CalculatePathSize(taskFile, false),
                             Confidence = ConfidenceLevel.High,
-                            Reason = $"反向引用：Windows 计划任务配置 ({relPath})",
+                            Reason = $"反向引用：Windows 计划任务 ({relPath})",
                             IsSelected = true
                         });
                     }
@@ -297,6 +318,7 @@ public class ReverseReferenceScanner
                         Category = ResidualCategory.MsiMetadata,
                         Path = @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\Folders",
                         ValueName = valName,
+                        Is64BitRegistryView = true,
                         Confidence = ConfidenceLevel.High,
                         Reason = "反向引用：Windows Installer 目录登记项",
                         IsSelected = true
@@ -307,33 +329,104 @@ public class ReverseReferenceScanner
         catch { }
     }
 
-    private static void ScanShellExtensions(TargetProfile profile, List<ResidualItem> results)
+    private static void ScanShellExtensions(TargetProfile profile, HashSet<string> matchedClsids, List<ResidualItem> results)
     {
-        try
-        {
-            using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-            using var approvedKey = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved");
-            if (approvedKey == null) return;
+        if (matchedClsids.Count == 0 && string.IsNullOrWhiteSpace(profile.DisplayName)) return;
 
-            foreach (var valName in approvedKey.GetValueNames())
+        // 1. Approved Shell Extensions across HKLM (64/32) and HKCU
+        var approvedRoots = new (RegistryHive Hive, RegistryView View, string SubPath, string FullDisplayPath, bool Is64View)[]
+        {
+            (RegistryHive.LocalMachine, RegistryView.Registry64,
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+                @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+                true),
+            (RegistryHive.LocalMachine, RegistryView.Registry32,
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+                @"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+                false),
+            (RegistryHive.CurrentUser, RegistryView.Default,
+                @"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+                @"HKCU\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+                Environment.Is64BitOperatingSystem)
+        };
+
+        foreach (var (hive, view, subPath, fullDisplayPath, is64View) in approvedRoots)
+        {
+            try
             {
-                string? desc = approvedKey.GetValue(valName) as string;
-                if (!string.IsNullOrEmpty(profile.GuidString) && valName.Equals(profile.GuidString, StringComparison.OrdinalIgnoreCase))
+                using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                using var approvedKey = baseKey.OpenSubKey(subPath);
+                if (approvedKey == null) continue;
+
+                foreach (var valName in approvedKey.GetValueNames())
                 {
-                    ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                    string? desc = approvedKey.GetValue(valName) as string;
+                    bool isClsidMatch = matchedClsids.Contains(valName);
+                    bool isDescMatch = !string.IsNullOrWhiteSpace(desc) &&
+                                       profile.DisplayName.Length >= 4 &&
+                                       desc.Contains(profile.DisplayName, StringComparison.OrdinalIgnoreCase);
+
+                    if (isClsidMatch || isDescMatch)
                     {
-                        Type = ResidualType.RegistryValue,
-                        Category = ResidualCategory.ShellExtension,
-                        Path = @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
-                        ValueName = valName,
-                        Confidence = ConfidenceLevel.High,
-                        Reason = $"反向引用：资源管理器右键/外壳扩展 ({desc})",
-                        IsSelected = true
-                    });
+                        ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                        {
+                            Type = ResidualType.RegistryValue,
+                            Category = ResidualCategory.ShellExtension,
+                            Path = fullDisplayPath,
+                            ValueName = valName,
+                            ValuePreview = desc,
+                            Is64BitRegistryView = is64View,
+                            Confidence = ConfidenceLevel.High,
+                            Reason = $"反向引用：资源管理器外壳扩展 ({desc ?? valName})",
+                            IsSelected = true
+                        });
+                    }
                 }
             }
+            catch { }
         }
-        catch { }
+
+        // 2. ContextMenuHandlers under HKCR (*, Directory, Directory\Background, Folder)
+        if (matchedClsids.Count > 0)
+        {
+            var handlerPaths = new[]
+            {
+                @"*\shellex\ContextMenuHandlers",
+                @"Directory\shellex\ContextMenuHandlers",
+                @"Directory\Background\shellex\ContextMenuHandlers",
+                @"Folder\shellex\ContextMenuHandlers"
+            };
+
+            foreach (var relHandlerPath in handlerPaths)
+            {
+                try
+                {
+                    using var classesRoot = RegistryKey.OpenBaseKey(RegistryHive.ClassesRoot, RegistryView.Registry64);
+                    using var cmKey = classesRoot.OpenSubKey(relHandlerPath);
+                    if (cmKey == null) continue;
+
+                    foreach (var subName in cmKey.GetSubKeyNames())
+                    {
+                        using var handlerSub = cmKey.OpenSubKey(subName);
+                        string? defaultGuid = handlerSub?.GetValue(string.Empty) as string;
+                        if (matchedClsids.Contains(subName) || (!string.IsNullOrEmpty(defaultGuid) && matchedClsids.Contains(defaultGuid)))
+                        {
+                            ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                            {
+                                Type = ResidualType.RegistryKey,
+                                Category = ResidualCategory.ShellExtension,
+                                Path = $@"HKCR\{relHandlerPath}\{subName}",
+                                Is64BitRegistryView = true,
+                                Confidence = ConfidenceLevel.High,
+                                Reason = $"反向引用：右键菜单上下文扩展 ({subName})",
+                                IsSelected = true
+                            });
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
     }
 
     private static bool IsPathMatching(string? text, TargetProfile profile)
@@ -355,7 +448,6 @@ public class ReverseReferenceScanner
             }
         }
 
-        // Require path boundary (\exeName) so generic substrings never match unrelated binaries (e.g. app.exe vs whatsapp.exe)
         foreach (var exe in profile.MainExeNames)
         {
             string exeLower = exe.ToLowerInvariant();

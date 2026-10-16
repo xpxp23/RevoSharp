@@ -19,9 +19,10 @@ public static class RegistryBackup
     private static int _exportCounter;
 
     /// <summary>
-    /// Exports the target registry key to a uniquely named .reg file before deletion (fixing same-second overwrite bug).
+    /// Exports the target registry key to a uniquely named .reg file before deletion,
+    /// honoring 64-bit / 32-bit registry views accurately.
     /// </summary>
-    public static async Task<string?> ExportKeyAsync(string fullRegistryPath, string appName)
+    public static async Task<string?> ExportKeyAsync(string fullRegistryPath, string appName, bool? is64BitView = null)
     {
         return await Task.Run(() =>
         {
@@ -37,10 +38,17 @@ public static class RegistryBackup
                 string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
                 string backupPath = Path.Combine(BackupDir, $"{safeAppName}_{timestamp}_{seq:D3}.reg");
 
+                string regViewArg = is64BitView switch
+                {
+                    false => " /reg:32",
+                    true => " /reg:64",
+                    null => fullRegistryPath.Contains(@"\WOW6432Node\", StringComparison.OrdinalIgnoreCase) ? " /reg:64" : " /reg:64"
+                };
+
                 var psi = new ProcessStartInfo
                 {
                     FileName = "reg.exe",
-                    Arguments = $"export \"{fullRegistryPath}\" \"{backupPath}\" /y",
+                    Arguments = $"export \"{fullRegistryPath}\" \"{backupPath}\" /y{regViewArg}",
                     CreateNoWindow = true,
                     UseShellExecute = false
                 };
@@ -58,9 +66,16 @@ public static class RegistryBackup
     }
 
     /// <summary>
-    /// Exports a single registry value into a standard .reg file before deleting that value.
+    /// Exports a single registry value into a valid Windows Registry Editor Version 5.00 .reg file
+    /// by reading the ACTUAL live value and RegistryValueKind (REG_SZ, REG_DWORD, REG_QWORD, REG_BINARY,
+    /// REG_EXPAND_SZ, REG_MULTI_SZ) from the registry before deletion.
     /// </summary>
-    public static async Task<string?> ExportValueAsync(string fullKeyPath, string valueName, string? valueData, string appName)
+    public static async Task<string?> ExportValueAsync(
+        string fullKeyPath,
+        string valueName,
+        string? fallbackValueData,
+        string appName,
+        bool? is64BitView = null)
     {
         return await Task.Run(async () =>
         {
@@ -77,14 +92,13 @@ public static class RegistryBackup
                 string backupPath = Path.Combine(BackupDir, $"{safeAppName}_val_{timestamp}_{seq:D3}.reg");
 
                 string fullHeaderKey = ExpandHivePrefix(fullKeyPath);
-                string escapedName = valueName.Replace("\\", "\\\\").Replace("\"", "\\\"");
-                string escapedVal = (valueData ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"");
+                string formattedValueLine = ReadAndFormatRegistryValueLine(fullKeyPath, valueName, fallbackValueData, is64BitView);
 
                 var sb = new StringBuilder();
                 sb.AppendLine("Windows Registry Editor Version 5.00");
                 sb.AppendLine();
                 sb.AppendLine($"[{fullHeaderKey}]");
-                sb.AppendLine($"\"{escapedName}\"=\"{escapedVal}\"");
+                sb.AppendLine(formattedValueLine);
 
                 await File.WriteAllTextAsync(backupPath, sb.ToString(), Encoding.Unicode);
                 return backupPath;
@@ -94,6 +108,113 @@ public static class RegistryBackup
                 return null;
             }
         });
+    }
+
+    private static string ReadAndFormatRegistryValueLine(
+        string fullKeyPath,
+        string valueName,
+        string? fallbackValueData,
+        bool? is64BitView)
+    {
+        string escapedNameHeader = string.IsNullOrEmpty(valueName)
+            ? "@"
+            : $"\"{EscapeRegString(valueName)}\"";
+
+        int slash = fullKeyPath.IndexOf('\\');
+        if (slash > 0)
+        {
+            string hiveName = fullKeyPath.Substring(0, slash);
+            string subKeyPath = fullKeyPath.Substring(slash + 1);
+            var hive = ParseHive(hiveName);
+
+            foreach (var view in GetTargetViews(subKeyPath, is64BitView))
+            {
+                try
+                {
+                    using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                    using var key = baseKey.OpenSubKey(subKeyPath, false);
+                    if (key == null) continue;
+
+                    object? rawVal = key.GetValue(valueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                    if (rawVal == null) continue;
+
+                    RegistryValueKind kind = key.GetValueKind(valueName);
+                    return FormatRegistryValueByKind(escapedNameHeader, rawVal, kind);
+                }
+                catch { }
+            }
+        }
+
+        string safeFallback = EscapeRegString(fallbackValueData ?? string.Empty);
+        return $"{escapedNameHeader}=\"{safeFallback}\"";
+    }
+
+    private static string FormatRegistryValueByKind(string escapedNameHeader, object rawVal, RegistryValueKind kind)
+    {
+        switch (kind)
+        {
+            case RegistryValueKind.DWord:
+                uint dwordVal = unchecked((uint)Convert.ToInt32(rawVal));
+                return $"{escapedNameHeader}=dword:{dwordVal:x8}";
+
+            case RegistryValueKind.QWord:
+                ulong qwordVal = unchecked((ulong)Convert.ToInt64(rawVal));
+                byte[] qwordBytes = BitConverter.GetBytes(qwordVal);
+                return $"{escapedNameHeader}=hex(b):{FormatHexBytes(qwordBytes)}";
+
+            case RegistryValueKind.Binary when rawVal is byte[] binBytes:
+                return $"{escapedNameHeader}=hex:{FormatHexBytes(binBytes)}";
+
+            case RegistryValueKind.ExpandString:
+                string expandStr = rawVal.ToString() ?? string.Empty;
+                byte[] expandBytes = Encoding.Unicode.GetBytes(expandStr + "\0");
+                return $"{escapedNameHeader}=hex(2):{FormatHexBytes(expandBytes)}";
+
+            case RegistryValueKind.MultiString when rawVal is string[] multiStrings:
+                string joined = string.Join("\0", multiStrings) + "\0\0";
+                byte[] multiBytes = Encoding.Unicode.GetBytes(joined);
+                return $"{escapedNameHeader}=hex(7):{FormatHexBytes(multiBytes)}";
+
+            default:
+                string strVal = rawVal.ToString() ?? string.Empty;
+                return $"{escapedNameHeader}=\"{EscapeRegString(strVal)}\"";
+        }
+    }
+
+    private static string FormatHexBytes(byte[] bytes)
+    {
+        if (bytes.Length == 0) return string.Empty;
+        return string.Join(",", bytes.Select(b => b.ToString("x2")));
+    }
+
+    private static string EscapeRegString(string input)
+    {
+        return input.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    }
+
+    /// <summary>
+    /// Reads a short human-readable preview of a registry value for display in the review table.
+    /// </summary>
+    public static string? TryGetRegistryValuePreview(RegistryKey key, string valueName)
+    {
+        try
+        {
+            object? val = key.GetValue(valueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+            if (val == null) return null;
+
+            string text = val switch
+            {
+                byte[] bytes => $"[二进制 {bytes.Length} B]",
+                string[] arr => string.Join("; ", arr),
+                _ => val.ToString() ?? string.Empty
+            };
+
+            return text.Length > 90 ? text.Substring(0, 87) + "..." : text;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public static async Task StopAndDeleteServiceAsync(string serviceName)
@@ -117,6 +238,66 @@ public static class RegistryBackup
                 }
             }
             catch { }
+        });
+    }
+
+    /// <summary>
+    /// Backs up a Windows Scheduled Task XML file and cleanly unregisters it from Task Scheduler (schtasks.exe)
+    /// so no orphaned TaskCache entries remain in the registry.
+    /// </summary>
+    public static async Task<string?> BackupAndDeleteScheduledTaskAsync(string taskFilePath, string? taskSchedulerName, string appName)
+    {
+        return await Task.Run(() =>
+        {
+            string? backupXmlPath = null;
+            try
+            {
+                if (!Directory.Exists(BackupDir))
+                {
+                    Directory.CreateDirectory(BackupDir);
+                }
+
+                if (File.Exists(taskFilePath))
+                {
+                    string safeAppName = AppLocator.SanitizeFileName(appName);
+                    string taskLeaf = AppLocator.SanitizeFileName(Path.GetFileName(taskFilePath));
+                    int seq = Interlocked.Increment(ref _exportCounter);
+                    string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+                    backupXmlPath = Path.Combine(BackupDir, $"{safeAppName}_task_{taskLeaf}_{timestamp}_{seq:D3}.xml");
+                    File.Copy(taskFilePath, backupXmlPath, overwrite: true);
+                }
+
+                string tn = taskSchedulerName ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(tn))
+                {
+                    string tasksDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "Tasks");
+                    if (taskFilePath.StartsWith(tasksDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        tn = "\\" + taskFilePath.Substring(tasksDir.Length).TrimStart('\\');
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(tn))
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "schtasks.exe",
+                        Arguments = $"/Delete /TN \"{tn}\" /F",
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    };
+                    using var proc = Process.Start(psi);
+                    proc?.WaitForExit(4000);
+                }
+
+                if (File.Exists(taskFilePath))
+                {
+                    FileBackup.SendToRecycleBin(taskFilePath);
+                }
+            }
+            catch { }
+
+            return backupXmlPath;
         });
     }
 
@@ -149,14 +330,14 @@ public static class RegistryBackup
     }
 
     /// <summary>
-    /// Deletes a registry key across 64-bit and 32-bit registry views safely.
+    /// Deletes a registry key honoring the target architecture view so 32-bit and 64-bit sibling keys are not cross-deleted.
     /// </summary>
-    public static bool DeleteKey(string hiveName, string subKeyPath)
+    public static bool DeleteKey(string hiveName, string subKeyPath, bool? is64BitView = null)
     {
         var hive = ParseHive(hiveName);
         bool deleted = false;
 
-        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+        foreach (var view in GetTargetViews(subKeyPath, is64BitView))
         {
             try
             {
@@ -175,20 +356,20 @@ public static class RegistryBackup
     }
 
     /// <summary>
-    /// Deletes a registry value across 64-bit and 32-bit registry views safely.
+    /// Deletes a registry value honoring the target architecture view safely.
     /// </summary>
-    public static bool DeleteValue(string hiveName, string subKeyPath, string valueName)
+    public static bool DeleteValue(string hiveName, string subKeyPath, string valueName, bool? is64BitView = null)
     {
         var hive = ParseHive(hiveName);
         bool deleted = false;
 
-        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+        foreach (var view in GetTargetViews(subKeyPath, is64BitView))
         {
             try
             {
                 using var baseKey = RegistryKey.OpenBaseKey(hive, view);
                 using var key = baseKey.OpenSubKey(subKeyPath, true);
-                if (key != null && key.GetValue(valueName) != null)
+                if (key != null && key.GetValue(valueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames) != null)
                 {
                     key.DeleteValue(valueName, false);
                     deleted = true;
@@ -198,6 +379,22 @@ public static class RegistryBackup
         }
 
         return deleted;
+    }
+
+    private static IEnumerable<RegistryView> GetTargetViews(string subKeyPath, bool? is64BitView)
+    {
+        // If path explicitly includes WOW6432Node, opening under Registry64 directly accesses that exact node.
+        if (subKeyPath.Contains(@"WOW6432Node\", StringComparison.OrdinalIgnoreCase))
+        {
+            return [RegistryView.Registry64];
+        }
+
+        if (is64BitView.HasValue)
+        {
+            return [is64BitView.Value ? RegistryView.Registry64 : RegistryView.Registry32];
+        }
+
+        return [RegistryView.Registry64, RegistryView.Registry32];
     }
 
     public static async Task SaveBackupManifestAsync(BackupManifest manifest)
@@ -268,11 +465,87 @@ public static class RegistryBackup
                 }
                 catch { }
             }
+
+            foreach (var xmlFile in manifest.TaskXmlBackupFiles)
+            {
+                if (!File.Exists(xmlFile)) continue;
+                try
+                {
+                    string fileName = Path.GetFileNameWithoutExtension(xmlFile);
+                    string taskName = "\\RevoSharp_Restored_" + fileName;
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "schtasks.exe",
+                        Arguments = $"/Create /TN \"{taskName}\" /XML \"{xmlFile}\" /F",
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    };
+                    using var proc = Process.Start(psi);
+                    proc?.WaitForExit(5000);
+                    if (proc?.ExitCode == 0) restored++;
+                }
+                catch { }
+            }
+
             return restored;
         });
     }
 
-    private static string ExpandHivePrefix(string fullKeyPath)
+    /// <summary>
+    /// Opens RegEdit jumped to the specified registry path, automatically adapting to localized Windows root names
+    /// (e.g. "计算机" on Simplified Chinese Windows, "Computer" on English Windows) by reading localized resources or existing LastKey prefix.
+    /// </summary>
+    public static void OpenInRegEdit(string registryPath)
+    {
+        if (string.IsNullOrWhiteSpace(registryPath)) return;
+
+        int slash = registryPath.IndexOf('\\');
+        if (slash <= 0) return;
+
+        string hiveFull = ExpandHivePrefix(registryPath);
+        string rootPrefix = DetectRegEditRootName();
+        string fullRegPath = $@"{rootPrefix}\{hiveFull}";
+
+        using (var regeditKey = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Applets\Regedit"))
+        {
+            regeditKey?.SetValue("LastKey", fullRegPath);
+        }
+
+        // Kill existing regedit instance if needed or pass -m so it reads LastKey fresh
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "regedit.exe",
+            Arguments = "-m",
+            UseShellExecute = true
+        });
+    }
+
+    private static string DetectRegEditRootName()
+    {
+        try
+        {
+            using var regeditKey = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Applets\Regedit");
+            if (regeditKey?.GetValue("LastKey") is string existingLastKey && !string.IsNullOrWhiteSpace(existingLastKey))
+            {
+                int firstSlash = existingLastKey.IndexOf('\\');
+                if (firstSlash > 0)
+                {
+                    return existingLastKey.Substring(0, firstSlash);
+                }
+            }
+        }
+        catch { }
+
+        string lang = System.Globalization.CultureInfo.InstalledUICulture.Name;
+        if (lang.StartsWith("zh-CN", StringComparison.OrdinalIgnoreCase) || lang.StartsWith("zh-Hans", StringComparison.OrdinalIgnoreCase))
+            return "计算机";
+        if (lang.StartsWith("zh-TW", StringComparison.OrdinalIgnoreCase) || lang.StartsWith("zh-HK", StringComparison.OrdinalIgnoreCase))
+            return "電腦";
+
+        return "Computer";
+    }
+
+    public static string ExpandHivePrefix(string fullKeyPath)
     {
         int slash = fullKeyPath.IndexOf('\\');
         if (slash <= 0) return fullKeyPath;

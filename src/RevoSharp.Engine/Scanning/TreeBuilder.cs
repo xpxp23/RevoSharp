@@ -6,7 +6,7 @@ namespace RevoSharp.Engine.Scanning;
 
 public static class TreeBuilder
 {
-    public static ObservableCollection<RegistryTreeNode> BuildRegistryTree(List<ResidualItem> items)
+    public static ObservableCollection<RegistryTreeNode> BuildRegistryTree(IEnumerable<ResidualItem> items)
     {
         var roots = new Dictionary<string, RegistryTreeNode>(StringComparer.OrdinalIgnoreCase);
 
@@ -45,6 +45,7 @@ public static class TreeBuilder
                     {
                         Name = part,
                         FullPath = currentPath,
+                        Parent = currentNode,
                         IsMatched = false,
                         IsExpanded = true
                     };
@@ -53,20 +54,46 @@ public static class TreeBuilder
                 currentNode = child;
             }
 
-            // Mark the leaf node as the matched residual item
-            currentNode.IsMatched = true;
-            currentNode.MatchReason = item.Reason;
-            currentNode.IsChecked = item.IsSelected;
-            currentNode.ValueName = item.ValueName;
-            currentNode.Category = item.Type == ResidualType.RegistryValue
-                ? ResidualCategory.RegistryValue
-                : ResidualCategory.RegistryKey;
+            // If this is a RegistryValue residual, attach a dedicated leaf node for the value name so multiple values under the same key don't overwrite each other
+            if (item.Type == ResidualType.RegistryValue && !string.IsNullOrEmpty(item.ValueName))
+            {
+                string valDisplay = string.IsNullOrEmpty(item.ValuePreview)
+                    ? $"[{item.ValueName}]"
+                    : $"[{item.ValueName}] = {item.ValuePreview}";
+
+                var valNode = new RegistryTreeNode
+                {
+                    Name = valDisplay,
+                    FullPath = $"{currentPath} [{item.ValueName}]",
+                    Parent = currentNode,
+                    IsMatched = true,
+                    MatchReason = item.Reason,
+                    ValueName = item.ValueName,
+                    Category = item.Category,
+                    AssociatedItem = item,
+                    IsExpanded = true
+                };
+                currentNode.Children.Add(valNode);
+            }
+            else
+            {
+                currentNode.IsMatched = true;
+                currentNode.MatchReason = item.Reason;
+                currentNode.ValueName = item.ValueName;
+                currentNode.Category = item.Category;
+                currentNode.AssociatedItem = item;
+            }
+        }
+
+        foreach (var root in roots.Values)
+        {
+            root.SyncFromItemSelection();
         }
 
         return new ObservableCollection<RegistryTreeNode>(roots.Values);
     }
 
-    public static ObservableCollection<FileSystemTreeNode> BuildFileSystemTree(List<ResidualItem> items)
+    public static ObservableCollection<FileSystemTreeNode> BuildFileSystemTree(IEnumerable<ResidualItem> items)
     {
         var roots = new Dictionary<string, FileSystemTreeNode>(StringComparer.OrdinalIgnoreCase);
 
@@ -112,6 +139,7 @@ public static class TreeBuilder
                     {
                         Name = part,
                         FullPath = currentPath,
+                        Parent = currentNode,
                         IsFile = isLast && item.Type == ResidualType.File,
                         IsMatched = false,
                         IsExpanded = true
@@ -123,9 +151,13 @@ public static class TreeBuilder
 
             currentNode.IsMatched = true;
             currentNode.MatchReason = item.Reason;
-            currentNode.IsChecked = item.IsSelected;
-            currentNode.Category = item.Reason.Contains("快捷方式") ? ResidualCategory.Shortcut :
-                                   item.Type == ResidualType.File ? ResidualCategory.File : ResidualCategory.Directory;
+            currentNode.Category = item.Category;
+            currentNode.AssociatedItem = item;
+        }
+
+        foreach (var root in roots.Values)
+        {
+            root.SyncFromItemSelection();
         }
 
         return new ObservableCollection<FileSystemTreeNode>(roots.Values);

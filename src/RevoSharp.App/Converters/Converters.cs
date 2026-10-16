@@ -86,20 +86,25 @@ public class AppIconConverter : IValueConverter
 
     private static ImageSource? ExtractAppIcon(InstalledApp app)
     {
-        var candidates = new List<string>();
+        var candidates = new List<(string FilePath, int IconIndex)>();
 
         if (!string.IsNullOrWhiteSpace(app.DisplayIcon))
         {
-            string iconPath = app.DisplayIcon.Trim().Trim('"', '\'');
-            int comma = iconPath.IndexOf(',');
-            if (comma > 0) iconPath = iconPath.Substring(0, comma).Trim().Trim('"', '\'');
-            if (!string.IsNullOrEmpty(iconPath)) candidates.Add(iconPath);
+            var (parsedPath, parsedIdx) = ParseIconLocation(app.DisplayIcon);
+            if (!string.IsNullOrEmpty(parsedPath))
+            {
+                candidates.Add((parsedPath, parsedIdx));
+                if (parsedIdx != 0)
+                {
+                    candidates.Add((parsedPath, 0));
+                }
+            }
         }
 
         string uninstallExe = AppLocator.ExtractExeFromCommand(app.UninstallString);
         if (!string.IsNullOrEmpty(uninstallExe) && !uninstallExe.Contains("msiexec", StringComparison.OrdinalIgnoreCase))
         {
-            candidates.Add(uninstallExe);
+            candidates.Add((uninstallExe, 0));
         }
 
         if (!string.IsNullOrWhiteSpace(app.InstallLocation) && Directory.Exists(app.InstallLocation))
@@ -108,40 +113,60 @@ public class AppIconConverter : IValueConverter
             {
                 var firstExe = Directory.GetFiles(app.InstallLocation, "*.exe")
                     .FirstOrDefault(f => !Path.GetFileName(f).StartsWith("unins", StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrEmpty(firstExe)) candidates.Add(firstExe);
-            }
-            catch { }
-        }
-
-        foreach (var path in candidates)
-        {
-            if (!File.Exists(path)) continue;
-            try
-            {
-                IntPtr[] large = new IntPtr[1];
-                IntPtr[] small = new IntPtr[1];
-                if (ExtractIconEx(path, 0, large, small, 1) > 0 && large[0] != IntPtr.Zero)
+                if (!string.IsNullOrEmpty(firstExe))
                 {
-                    try
-                    {
-                        var bs = Imaging.CreateBitmapSourceFromHIcon(
-                            large[0],
-                            Int32Rect.Empty,
-                            BitmapSizeOptions.FromEmptyOptions());
-                        bs.Freeze();
-                        return bs;
-                    }
-                    finally
-                    {
-                        DestroyIcon(large[0]);
-                        if (small[0] != IntPtr.Zero) DestroyIcon(small[0]);
-                    }
+                    candidates.Add((firstExe, 0));
                 }
             }
             catch { }
         }
 
+        foreach (var (path, iconIndex) in candidates)
+        {
+            if (!File.Exists(path)) continue;
+
+            IntPtr[] large = new IntPtr[1];
+            IntPtr[] small = new IntPtr[1];
+            try
+            {
+                uint extracted = ExtractIconEx(path, iconIndex, large, small, 1);
+                IntPtr chosenHandle = large[0] != IntPtr.Zero ? large[0] : small[0];
+                if (extracted > 0 && chosenHandle != IntPtr.Zero)
+                {
+                    var bs = Imaging.CreateBitmapSourceFromHIcon(
+                        chosenHandle,
+                        Int32Rect.Empty,
+                        BitmapSizeOptions.FromEmptyOptions());
+                    bs.Freeze();
+                    return bs;
+                }
+            }
+            catch { }
+            finally
+            {
+                if (large[0] != IntPtr.Zero) DestroyIcon(large[0]);
+                if (small[0] != IntPtr.Zero) DestroyIcon(small[0]);
+            }
+        }
+
         return null;
+    }
+
+    private static (string FilePath, int IconIndex) ParseIconLocation(string rawIcon)
+    {
+        string trimmed = rawIcon.Trim().Trim('"', '\'');
+        int iconIndex = 0;
+        int comma = trimmed.LastIndexOf(',');
+        if (comma > 0)
+        {
+            string indexPart = trimmed.Substring(comma + 1).Trim();
+            if (int.TryParse(indexPart, out int parsed))
+            {
+                iconIndex = parsed;
+            }
+            trimmed = trimmed.Substring(0, comma).Trim().Trim('"', '\'');
+        }
+        return (trimmed, iconIndex);
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();

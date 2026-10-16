@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using Microsoft.Win32;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Discovery;
+using RevoSharp.Engine.Hunter;
 
 namespace RevoSharp.App.Views;
 
@@ -26,10 +28,22 @@ public partial class ForcedUninstallDialog
         };
         if (dlg.ShowDialog() == true)
         {
-            TargetPathTextBox.Text = dlg.FileName;
+            string selectedFile = dlg.FileName;
+            // Automatically resolve .lnk shortcut target so Forced Uninstall locates the real installation directory!
+            if (selectedFile.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+            {
+                string? resolved = HunterService.ResolveShortcutTarget(selectedFile);
+                if (!string.IsNullOrEmpty(resolved) && (File.Exists(resolved) || Directory.Exists(resolved)))
+                {
+                    selectedFile = resolved;
+                    HintTextBlock.Text = $"🔗 已自动解析快捷方式指向的真实路径: {selectedFile}";
+                }
+            }
+
+            TargetPathTextBox.Text = selectedFile;
             if (string.IsNullOrWhiteSpace(AppNameTextBox.Text))
             {
-                AppNameTextBox.Text = Path.GetFileNameWithoutExtension(dlg.FileName);
+                AppNameTextBox.Text = TryExtractProductName(selectedFile);
             }
         }
     }
@@ -50,10 +64,37 @@ public partial class ForcedUninstallDialog
         }
     }
 
+    private static string TryExtractProductName(string filePath)
+    {
+        try
+        {
+            if (File.Exists(filePath))
+            {
+                var vi = FileVersionInfo.GetVersionInfo(filePath);
+                if (!string.IsNullOrWhiteSpace(vi.ProductName))
+                    return vi.ProductName.Trim();
+                if (!string.IsNullOrWhiteSpace(vi.FileDescription))
+                    return vi.FileDescription.Trim();
+            }
+        }
+        catch { }
+
+        return Path.GetFileNameWithoutExtension(filePath);
+    }
+
     private void OnStartScanClick(object sender, RoutedEventArgs e)
     {
         string name = AppNameTextBox.Text.Trim();
         string path = TargetPathTextBox.Text.Trim().Trim('"');
+
+        if (!string.IsNullOrEmpty(path) && path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            string? resolved = HunterService.ResolveShortcutTarget(path);
+            if (!string.IsNullOrEmpty(resolved))
+            {
+                path = resolved;
+            }
+        }
 
         if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(path))
         {
@@ -63,11 +104,12 @@ public partial class ForcedUninstallDialog
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            name = Path.GetFileNameWithoutExtension(path);
+            name = TryExtractProductName(path);
         }
 
         string installDir = string.Empty;
         string displayIcon = string.Empty;
+        string publisher = "强制卸载目标";
         bool isProtectedSingle = false;
 
         if (!string.IsNullOrEmpty(path))
@@ -75,6 +117,13 @@ public partial class ForcedUninstallDialog
             if (File.Exists(path))
             {
                 displayIcon = path;
+                try
+                {
+                    string? comp = FileVersionInfo.GetVersionInfo(path).CompanyName;
+                    if (!string.IsNullOrWhiteSpace(comp)) publisher = comp.Trim();
+                }
+                catch { }
+
                 string? dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir) && !AppLocator.IsProtectedSharedDirectory(dir))
                 {
@@ -109,7 +158,7 @@ public partial class ForcedUninstallDialog
         {
             Id = $"Forced_{Guid.NewGuid():N}",
             DisplayName = name,
-            Publisher = "强制卸载目标",
+            Publisher = publisher,
             InstallLocation = installDir,
             DisplayIcon = displayIcon,
             IsProtectedSingleFile = isProtectedSingle

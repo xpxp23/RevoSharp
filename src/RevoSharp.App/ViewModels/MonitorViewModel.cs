@@ -28,7 +28,7 @@ public partial class MonitorViewModel : ObservableObject
     private int _capturedRegistry;
 
     [ObservableProperty]
-    private string _statusText = "请选择安装包（安装完成后将自动识别新增注册表软件名称）";
+    private string _statusText = "请选择安装包（安装完成后建议点击“试运行新软件”以捕获首次启动配置）";
 
     [ObservableProperty]
     private ObservableCollection<string> _recentEvents = [];
@@ -100,6 +100,21 @@ public partial class MonitorViewModel : ObservableObject
     }
 
     [RelayCommand]
+    public void LaunchDetectedApp()
+    {
+        if (_monitor == null || !IsMonitoring) return;
+
+        if (_monitor.TryLaunchDetectedInstalledApp(out string launchedExe))
+        {
+            StatusText = $"🚀 已拉起新安装的软件 ({Path.GetFileName(launchedExe)})，待其初始化后关闭该软件再点击“完成安装并保存日志”即可完整捕获首次运行残留！";
+        }
+        else
+        {
+            StatusText = "ℹ️ 暂未检测到已完成的安装目录，请等待安装向导完成后再试，或手动启动一次该软件。";
+        }
+    }
+
+    [RelayCommand]
     public async Task StopAndSaveAsync(Action onSaved)
     {
         if (_monitor == null) return;
@@ -114,7 +129,7 @@ public partial class MonitorViewModel : ObservableObject
             ? $"{log.DetectedDisplayName} (自动关联注册表)"
             : log.AppName;
 
-        StatusText = $"✅ 监视完成！已关联【{targetTitle}】，记录 {log.CreatedFiles.Count} 个文件与 {log.CreatedRegistryKeys.Count} 项注册表。";
+        StatusText = $"✅ 监视完成！已关联【{targetTitle}】，记录 {log.CreatedFiles.Count} 个文件、{log.CreatedRegistryKeys.Count} 项注册表键与 {log.ModifiedRegistryValues.Count} 项注册表值。";
         onSaved?.Invoke();
     }
 

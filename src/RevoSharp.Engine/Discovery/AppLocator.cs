@@ -1,6 +1,8 @@
+using System.Globalization;
 using Microsoft.Win32;
 using RevoSharp.Core.Models;
 using RevoSharp.Core.Serialization;
+using RevoSharp.Engine.Scanning;
 
 namespace RevoSharp.Engine.Discovery;
 
@@ -42,8 +44,8 @@ public class AppLocator
                 ScanWindowsStoreApps(apps);
             }
 
-            // 5. Match with saved trace logs (by DisplayName, DetectedDisplayName, UninstallKeyId, or file name)
-            await AttachTraceLogsAsync(apps.Values);
+            // 5. Fast match with saved trace logs using lightweight index cache
+            await AttachTraceLogsFastAsync(apps.Values);
 
             return apps.Values
                 .OrderBy(a => a.DisplayName, StringComparer.CurrentCultureIgnoreCase)
@@ -51,28 +53,56 @@ public class AppLocator
         });
     }
 
-    private static async Task AttachTraceLogsAsync(IEnumerable<InstalledApp> apps)
+    /// <summary>
+    /// Asynchronously computes real disk directory sizes for installed apps whose registry entry lacked EstimatedSize,
+    /// updating UI rows seamlessly in the background.
+    /// </summary>
+    public async Task PopulateMissingSizesAsync(IEnumerable<InstalledApp> apps, CancellationToken cancellationToken = default)
+    {
+        var missingApps = apps
+            .Where(a => a.EstimatedSizeInBytes <= 0 &&
+                        !string.IsNullOrWhiteSpace(a.InstallLocation) &&
+                        !IsProtectedSharedDirectory(a.InstallLocation) &&
+                        Directory.Exists(a.InstallLocation))
+            .ToList();
+
+        if (missingApps.Count == 0) return;
+
+        using var semaphore = new SemaphoreSlim(4);
+        var tasks = missingApps.Select(async app =>
+        {
+            if (cancellationToken.IsCancellationRequested) return;
+            await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                app.IsSizeCalculating = true;
+                long size = await Task.Run(() => ResidualScanner.CalculatePathSize(app.InstallLocation, isDirectory: true), cancellationToken).ConfigureAwait(false);
+                if (size > 0)
+                {
+                    app.EstimatedSizeInBytes = size;
+                }
+            }
+            catch { }
+            finally
+            {
+                app.IsSizeCalculating = false;
+                semaphore.Release();
+            }
+        });
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch { }
+    }
+
+    private static async Task AttachTraceLogsFastAsync(IEnumerable<InstalledApp> apps)
     {
         if (!Directory.Exists(LogDirectory)) return;
 
-        var loadedLogs = new List<TraceLog>();
-        try
-        {
-            foreach (var file in Directory.GetFiles(LogDirectory, "*.revolog.json.gz"))
-            {
-                try
-                {
-                    var log = await TraceLogSerializer.LoadAsync(file);
-                    if (log != null)
-                    {
-                        log.FilePath = file;
-                        loadedLogs.Add(log);
-                    }
-                }
-                catch { }
-            }
-        }
-        catch { }
+        var indexEntries = await TraceLogSerializer.LoadOrSyncIndexAsync(LogDirectory);
+        if (indexEntries.Count == 0) return;
 
         foreach (var app in apps)
         {
@@ -85,17 +115,17 @@ public class AppLocator
                 continue;
             }
 
-            var matchedLog = loadedLogs.FirstOrDefault(l =>
+            var matchedEntry = indexEntries.FirstOrDefault(l =>
                 (!string.IsNullOrEmpty(l.DetectedDisplayName) && l.DetectedDisplayName.Equals(app.DisplayName, StringComparison.OrdinalIgnoreCase)) ||
                 (!string.IsNullOrEmpty(l.AppName) && l.AppName.Equals(app.DisplayName, StringComparison.OrdinalIgnoreCase)) ||
                 (!string.IsNullOrEmpty(l.UninstallKeyId) && !string.IsNullOrEmpty(app.UninstallKeyName) && l.UninstallKeyId.Equals(app.UninstallKeyName, StringComparison.OrdinalIgnoreCase)) ||
                 (!string.IsNullOrEmpty(l.DetectedInstallLocation) && !string.IsNullOrEmpty(app.InstallLocation) &&
                  l.DetectedInstallLocation.TrimEnd('\\').Equals(app.InstallLocation.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)));
 
-            if (matchedLog != null && File.Exists(matchedLog.FilePath))
+            if (matchedEntry != null && File.Exists(matchedEntry.FilePath))
             {
                 app.HasTraceLog = true;
-                app.TraceLogPath = matchedLog.FilePath;
+                app.TraceLogPath = matchedEntry.FilePath;
             }
         }
     }
@@ -164,7 +194,7 @@ public class AppLocator
                     string version = appKey.GetValue("DisplayVersion") as string ?? string.Empty;
                     string installLocation = appKey.GetValue("InstallLocation") as string ?? string.Empty;
                     string displayIcon = appKey.GetValue("DisplayIcon") as string ?? string.Empty;
-                    string installDate = appKey.GetValue("InstallDate") as string ?? string.Empty;
+                    string installDateRaw = appKey.GetValue("InstallDate") as string ?? string.Empty;
 
                     long estimatedSize = 0;
                     if (appKey.GetValue("EstimatedSize") is int sizeInKb && sizeInKb > 0)
@@ -173,6 +203,7 @@ public class AppLocator
                     }
 
                     string resolvedLocation = DeduceInstallLocation(installLocation, displayIcon, uninstallString, quietUninstallString);
+                    var (formattedDate, isRecent) = ParseAndEvaluateInstallDate(installDateRaw, resolvedLocation);
                     string archLabel = is64Bit ? "64 位" : "32 位";
 
                     string regFullPath = hivePrefix == @"HKLM\WOW6432Node"
@@ -182,7 +213,6 @@ public class AppLocator
                     string dictKey = cleanDisplayName;
                     if (apps.TryGetValue(dictKey, out var existing))
                     {
-                        // If exact same uninstall string or location, skip duplicate mirror entry
                         if (existing.UninstallString.Equals(uninstallString.Trim(), StringComparison.OrdinalIgnoreCase))
                             continue;
                         dictKey = $"{cleanDisplayName} ({archLabel} {version})".Trim();
@@ -200,7 +230,8 @@ public class AppLocator
                         UninstallString = uninstallString.Trim(),
                         QuietUninstallString = quietUninstallString.Trim(),
                         DisplayIcon = displayIcon.Trim().Trim('"'),
-                        InstallDate = FormatInstallDate(installDate),
+                        InstallDate = formattedDate,
+                        IsRecentlyInstalled = isRecent,
                         EstimatedSizeInBytes = estimatedSize,
                         Architecture = archLabel,
                         Is64Bit = is64Bit
@@ -241,7 +272,6 @@ public class AppLocator
                     string displayName = pkgKey.GetValue("DisplayName") as string ?? string.Empty;
                     string pkgRootFolder = pkgKey.GetValue("PackageRootFolder") as string ?? string.Empty;
 
-                    // Extract readable name from PackageFullName (Name_Version_Arch__PublisherId)
                     string[] parts = pkgFullName.Split('_');
                     string shortName = parts.Length > 0 ? parts[0] : pkgFullName;
                     string version = parts.Length > 1 ? parts[1] : string.Empty;
@@ -255,6 +285,9 @@ public class AppLocator
                     string dictKey = $"[UWP] {displayName}";
                     if (apps.ContainsKey(dictKey)) continue;
 
+                    string safeLoc = !IsProtectedSharedDirectory(pkgRootFolder) ? pkgRootFolder : string.Empty;
+                    var (formattedDate, isRecent) = ParseAndEvaluateInstallDate(string.Empty, safeLoc);
+
                     string psUninstall = $"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Remove-AppxPackage -Package '{pkgFullName}'\"";
 
                     apps[dictKey] = new InstalledApp
@@ -265,7 +298,9 @@ public class AppLocator
                         DisplayName = $"{displayName} (商店应用)",
                         DisplayVersion = version,
                         Publisher = "Microsoft Store / UWP",
-                        InstallLocation = !IsProtectedSharedDirectory(pkgRootFolder) ? pkgRootFolder : string.Empty,
+                        InstallLocation = safeLoc,
+                        InstallDate = formattedDate,
+                        IsRecentlyInstalled = isRecent,
                         UninstallString = psUninstall,
                         QuietUninstallString = psUninstall,
                         Architecture = arch.ToUpperInvariant(),
@@ -324,7 +359,6 @@ public class AppLocator
                     return true;
             }
 
-            // Also protect C:\Users root
             string? usersRoot = Path.GetDirectoryName(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
             if (!string.IsNullOrEmpty(usersRoot) && clean.Equals(usersRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
                 return true;
@@ -352,7 +386,6 @@ public class AppLocator
             }
         }
 
-        // Try DisplayIcon
         if (!string.IsNullOrWhiteSpace(displayIcon))
         {
             string icon = displayIcon.Trim().Trim('"', '\'');
@@ -367,7 +400,6 @@ public class AppLocator
             }
         }
 
-        // Try UninstallString & QuietUninstallString
         foreach (var cmd in new[] { uninstallString, quietUninstallString })
         {
             if (string.IsNullOrWhiteSpace(cmd)) continue;
@@ -406,14 +438,30 @@ public class AppLocator
         return string.Empty;
     }
 
-    private static string FormatInstallDate(string raw)
+    private static (string FormattedDate, bool IsRecent) ParseAndEvaluateInstallDate(string rawDate, string resolvedLocation)
     {
-        if (string.IsNullOrWhiteSpace(raw) || raw.Length != 8) return raw;
-        if (int.TryParse(raw, out _))
+        if (!string.IsNullOrWhiteSpace(rawDate) && rawDate.Length == 8 &&
+            DateTime.TryParseExact(rawDate, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsed))
         {
-            return $"{raw.Substring(0, 4)}-{raw.Substring(4, 2)}-{raw.Substring(6, 2)}";
+            bool recent = (DateTime.Now - parsed).TotalDays <= 14 && parsed <= DateTime.Now.AddDays(1);
+            return (parsed.ToString("yyyy-MM-dd"), recent);
         }
-        return raw;
+
+        if (!string.IsNullOrWhiteSpace(resolvedLocation) && Directory.Exists(resolvedLocation))
+        {
+            try
+            {
+                DateTime created = Directory.GetCreationTime(resolvedLocation);
+                if (created.Year >= 2000 && created <= DateTime.Now.AddDays(1))
+                {
+                    bool recent = (DateTime.Now - created).TotalDays <= 14;
+                    return (created.ToString("yyyy-MM-dd"), recent);
+                }
+            }
+            catch { }
+        }
+
+        return (rawDate, false);
     }
 
     public static string SanitizeFileName(string name)

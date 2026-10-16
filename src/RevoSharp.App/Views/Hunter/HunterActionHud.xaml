@@ -18,7 +18,7 @@
     </Window.Resources>
 
     <!-- Outer Margin="24" prevents the 24px DropShadowEffect from being clipped at window borders -->
-    <Border Width="510"
+    <Border Width="520"
             Margin="24"
             Background="#F4181A20"
             BorderBrush="#0088FF"
@@ -152,7 +152,7 @@
                            Command="{Binding KillProcessCommand}" />
 
                 <ui:Button Grid.Row="1" Grid.Column="1"
-                           Content="终止并禁用自启动"
+                           Content="终止并备份移除自启"
                            Icon="{ui:SymbolIcon DismissCircle24}"
                            HorizontalAlignment="Stretch"
                            Margin="4,0,0,8"
@@ -177,11 +177,18 @@
             <!-- 4. Footer & Status Bar -->
             <Grid Grid.Row="3">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Column="0"
+                <ui:ProgressRing Grid.Column="0"
+                                 Width="16" Height="16"
+                                 IsIndeterminate="True"
+                                 Margin="0,0,8,0"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+
+                <TextBlock Grid.Column="1"
                            Text="{Binding StatusMessage}"
                            FontSize="12"
                            Foreground="#80C0FF"
@@ -189,7 +196,7 @@
                            TextTrimming="CharacterEllipsis"
                            ToolTip="{Binding StatusMessage}" />
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
                     <ui:Button Content="返回主界面"
                                Appearance="Secondary"
                                Margin="0,0,6,0"

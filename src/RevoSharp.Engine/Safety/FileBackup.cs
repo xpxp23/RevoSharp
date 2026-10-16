@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 
 namespace RevoSharp.Engine.Safety;
@@ -36,15 +37,18 @@ public static class FileBackup
     private static extern bool MoveFileEx(string lpExistingFileName, string? lpNewFileName, uint dwFlags);
 
     /// <summary>
-    /// Safely moves a file or folder into the Windows Recycle Bin.
+    /// Safely moves a file or folder into the Windows Recycle Bin after clearing read-only attributes.
     /// </summary>
     public static bool SendToRecycleBin(string path)
     {
+        if (string.IsNullOrWhiteSpace(path)) return false;
         if (!File.Exists(path) && !Directory.Exists(path)) return false;
 
         try
         {
-            string cleanPath = path.TrimEnd('\\', '/');
+            string cleanPath = Path.GetFullPath(path.Trim().Trim('"')).TrimEnd('\\', '/');
+            ClearReadOnlyAttributes(cleanPath);
+
             string doubleNullTerminatedPath = cleanPath + "\0\0";
 
             var fileOp = new SHFILEOPSTRUCT
@@ -64,7 +68,9 @@ public static class FileBackup
     }
 
     /// <summary>
-    /// Schedules a locked file or empty directory to be deleted by Windows Session Manager on next reboot.
+    /// Schedules a locked file or directory tree to be deleted by Windows Session Manager (smss.exe) on next reboot.
+    /// Uses strict bottom-up post-order traversal (files -> deepest subdirectories -> root directory)
+    /// so smss.exe never fails due to non-empty child directories.
     /// </summary>
     public static bool ScheduleDeleteOnReboot(string path)
     {
@@ -72,18 +78,71 @@ public static class FileBackup
 
         try
         {
-            if (Directory.Exists(path))
+            string cleanPath = Path.GetFullPath(path.Trim().Trim('"')).TrimEnd('\\', '/');
+            ClearReadOnlyAttributes(cleanPath);
+
+            if (Directory.Exists(cleanPath))
             {
-                foreach (var file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
+                // 1. Register all files first
+                foreach (var file in Directory.EnumerateFiles(cleanPath, "*", new EnumerationOptions
                 {
+                    IgnoreInaccessible = true,
+                    RecurseSubdirectories = true
+                }))
+                {
+                    try
+                    {
+                        File.SetAttributes(file, FileAttributes.Normal);
+                    }
+                    catch { }
                     MoveFileEx(file, null, MOVEFILE_DELAY_UNTIL_REBOOT);
                 }
+
+                // 2. Register all subdirectories in bottom-up post-order (deepest paths first)
+                var subDirs = Directory.EnumerateDirectories(cleanPath, "*", new EnumerationOptions
+                {
+                    IgnoreInaccessible = true,
+                    RecurseSubdirectories = true
+                })
+                .OrderByDescending(d => d.Length)
+                .ToList();
+
+                foreach (var subDir in subDirs)
+                {
+                    MoveFileEx(subDir, null, MOVEFILE_DELAY_UNTIL_REBOOT);
+                }
             }
-            return MoveFileEx(path, null, MOVEFILE_DELAY_UNTIL_REBOOT);
+
+            // 3. Finally register the target file or root directory itself
+            return MoveFileEx(cleanPath, null, MOVEFILE_DELAY_UNTIL_REBOOT);
         }
         catch
         {
             return false;
         }
+    }
+
+    private static void ClearReadOnlyAttributes(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                var attr = File.GetAttributes(path);
+                if ((attr & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(path, attr & ~FileAttributes.ReadOnly);
+                }
+            }
+            else if (Directory.Exists(path))
+            {
+                var dirInfo = new DirectoryInfo(path);
+                if ((dirInfo.Attributes & FileAttributes.ReadOnly) != 0)
+                {
+                    dirInfo.Attributes &= ~FileAttributes.ReadOnly;
+                }
+            }
+        }
+        catch { }
     }
 }
