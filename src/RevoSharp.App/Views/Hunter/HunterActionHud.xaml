@@ -21,13 +21,13 @@
     <!-- Outer Margin="24" prevents the 24px DropShadowEffect from being clipped at window borders -->
     <Border Width="520"
             Margin="24"
-            Background="#F81C1E26"
-            BorderBrush="#3AFFFFFF"
+            Background="{DynamicResource RevoHudCardBgBrush}"
+            BorderBrush="{DynamicResource RevoHudCardBorderBrush}"
             BorderThickness="1"
             CornerRadius="12"
             Padding="18">
         <Border.Effect>
-            <DropShadowEffect Color="#000000" BlurRadius="24" ShadowDepth="4" Opacity="0.65" />
+            <DropShadowEffect Color="#000000" BlurRadius="24" ShadowDepth="4" Opacity="0.55" />
         </Border.Effect>
 
         <Grid>
@@ -46,7 +46,10 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Width="48" Height="48" CornerRadius="10" Background="#1EFFFFFF" BorderBrush="#28FFFFFF" BorderThickness="1" Margin="0,0,12,0">
+                <Border Grid.Column="0" Width="48" Height="48" CornerRadius="10"
+                        Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                        BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                        BorderThickness="1" Margin="0,0,12,0">
                     <Grid>
                         <Image Source="{Binding AppIcon}"
                                Width="34" Height="34"
@@ -54,7 +57,7 @@
                                RenderOptions.BitmapScalingMode="HighQuality" />
                         <ui:SymbolIcon Symbol="Apps24"
                                        FontSize="24"
-                                       Foreground="#88FFFFFF"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                                        HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
                                        Visibility="{Binding AppIcon, Converter={StaticResource NullToVisInv}}" />
@@ -65,18 +68,18 @@
                     <TextBlock Text="{Binding TargetInfo.WindowTitle}"
                                FontSize="15.5"
                                FontWeight="SemiBold"
-                               Foreground="White"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                TextTrimming="CharacterEllipsis" />
 
                     <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                        <Border Background="#2E0078D4" BorderBrush="#4460CDFF" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
-                            <TextBlock Text="{Binding TargetInfo.ProcessName}" FontSize="11" Foreground="#88D4FF" FontFamily="Consolas, Microsoft YaHei UI" />
+                        <Border Background="{DynamicResource RevoTagBlueBgBrush}" BorderBrush="{DynamicResource RevoTagBlueBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
+                            <TextBlock Text="{Binding TargetInfo.ProcessName}" FontSize="11" Foreground="{DynamicResource RevoAccentCyanBrush}" FontFamily="Consolas, Microsoft YaHei UI" />
                         </Border>
-                        <Border Background="#1AFFFFFF" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
-                            <TextBlock Text="{Binding TargetInfo.ProcessId, StringFormat='PID: {0}'}" FontSize="11" Foreground="#CCCCCC" FontFamily="Consolas, Microsoft YaHei UI" />
+                        <Border Background="{DynamicResource RevoTagNeutralBgBrush}" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
+                            <TextBlock Text="{Binding TargetInfo.ProcessId, StringFormat='PID: {0}'}" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontFamily="Consolas, Microsoft YaHei UI" />
                         </Border>
-                        <Border Background="#1AFFFFFF" CornerRadius="4" Padding="6,2">
-                            <TextBlock Text="{Binding TargetInfo.Architecture}" FontSize="11" Foreground="#CCCCCC" />
+                        <Border Background="{DynamicResource RevoTagNeutralBgBrush}" CornerRadius="4" Padding="6,2">
+                            <TextBlock Text="{Binding TargetInfo.Architecture}" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                         </Border>
                     </StackPanel>
                 </StackPanel>
@@ -89,38 +92,44 @@
             </Grid>
 
             <!-- 2. Badges & Path Details -->
-            <Border Grid.Row="1" Background="#14FFFFFF" BorderBrush="#1EFFFFFF" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,14">
+            <Border Grid.Row="1"
+                    Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="10"
+                    Margin="0,0,0,14">
                 <StackPanel>
                     <WrapPanel Margin="0,0,0,6">
-                        <Border Background="#38FF4444" BorderBrush="#55FF6666" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                        <Border Background="{DynamicResource RevoTagRedBgBrush}" BorderBrush="{DynamicResource RevoTagRedBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsSystemCritical, Converter={StaticResource BoolToVis}}">
                             <StackPanel Orientation="Horizontal">
-                                <ui:SymbolIcon Symbol="Shield24" FontSize="12" Foreground="#FFAAAA" Margin="0,0,4,0" VerticalAlignment="Center" />
-                                <TextBlock Text="系统核心保护 (禁止破坏性操作)" FontSize="11" Foreground="#FFAAAA" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <ui:SymbolIcon Symbol="Shield24" FontSize="12" Foreground="{DynamicResource RevoAccentRedBrush}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="系统核心保护 (禁止破坏性操作)" FontSize="11" Foreground="{DynamicResource RevoAccentRedBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
                             </StackPanel>
                         </Border>
 
-                        <Border Background="#2844DD66" BorderBrush="#446CCB5F" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                        <Border Background="{DynamicResource RevoTagGreenBgBrush}" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsRegisteredApp, Converter={StaticResource BoolToVis}}">
                             <StackPanel Orientation="Horizontal">
-                                <ui:SymbolIcon Symbol="Box24" FontSize="12" Foreground="#AAFFAA" Margin="0,0,4,0" VerticalAlignment="Center" />
-                                <TextBlock Text="已登记安装软件" FontSize="11" Foreground="#AAFFAA" VerticalAlignment="Center" />
+                                <ui:SymbolIcon Symbol="Box24" FontSize="12" Foreground="{DynamicResource RevoAccentGreenBrush}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="已登记安装软件" FontSize="11" Foreground="{DynamicResource RevoAccentGreenBrush}" VerticalAlignment="Center" />
                             </StackPanel>
                         </Border>
 
-                        <Border Background="#28FFAA00" BorderBrush="#44FFCC44" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                        <Border Background="{DynamicResource RevoTagNeutralBgBrush}" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsRegisteredApp, Converter={StaticResource InverseBoolToVis}}">
                             <StackPanel Orientation="Horizontal">
-                                <ui:SymbolIcon Symbol="Flash24" FontSize="12" Foreground="#FFEE88" Margin="0,0,4,0" VerticalAlignment="Center" />
-                                <TextBlock Text="独立/便携程序 (已保护共享父目录)" FontSize="11" Foreground="#FFEE88" VerticalAlignment="Center" />
+                                <ui:SymbolIcon Symbol="Flash24" FontSize="12" Foreground="{DynamicResource RevoAccentAmberBrush}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="独立/便携程序 (已保护共享父目录)" FontSize="11" Foreground="{DynamicResource RevoAccentAmberBrush}" VerticalAlignment="Center" />
                             </StackPanel>
                         </Border>
 
-                        <Border Background="#28AA88FF" BorderBrush="#44C395FF" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
-                                Visibility="{Binding TargetInfo.HasAutostartEntry, Converter={StaticResource BoolToVis}}">
+                        <Border Background="{DynamicResource RevoTagPurpleBgBrush}" BorderBrush="{DynamicResource RevoTagPurpleBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                                Visibility="{Binding HasAutostartEntry, Converter={StaticResource BoolToVis}}">
                             <StackPanel Orientation="Horizontal">
-                                <ui:SymbolIcon Symbol="ArrowClockwise24" FontSize="12" Foreground="#DDAAFF" Margin="0,0,4,0" VerticalAlignment="Center" />
-                                <TextBlock Text="{Binding TargetInfo.AutostartDescriptions.Count, StringFormat='驻留自启动项 ({0}处)'}" FontSize="11" Foreground="#DDAAFF" VerticalAlignment="Center" />
+                                <ui:SymbolIcon Symbol="ArrowClockwise24" FontSize="12" Foreground="{DynamicResource RevoAccentPurpleBrush}" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding AutostartCount, StringFormat='驻留自启动项 ({0}处)'}" FontSize="11" Foreground="{DynamicResource RevoAccentPurpleBrush}" VerticalAlignment="Center" />
                             </StackPanel>
                         </Border>
                     </WrapPanel>
@@ -128,7 +137,7 @@
                     <TextBlock Text="{Binding TargetInfo.ExecutablePath, StringFormat='路径: {0}'}"
                                FontSize="11"
                                FontFamily="Consolas, Microsoft YaHei UI"
-                               Foreground="#B0B4BE"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                TextTrimming="CharacterEllipsis"
                                ToolTip="{Binding TargetInfo.ExecutablePath}" />
                 </StackPanel>
@@ -212,7 +221,7 @@
                 <TextBlock Grid.Column="1"
                            Text="{Binding StatusMessage}"
                            FontSize="12"
-                           Foreground="#88D4FF"
+                           Foreground="{DynamicResource RevoAccentCyanBrush}"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"
                            ToolTip="{Binding StatusMessage}" />

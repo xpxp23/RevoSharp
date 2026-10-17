@@ -15,7 +15,7 @@ public partial class MonitorViewModel : ObservableObject
 {
     private EtwInstallMonitor? _monitor;
     private readonly ConcurrentQueue<string> _eventQueue = new();
-    private readonly List<string> _allCapturedHistory = [];
+    private readonly Queue<string> _allCapturedHistory = new(1600);
     private readonly DispatcherTimer _flushTimer;
     private readonly Stopwatch _elapsedStopwatch = new();
 
@@ -88,29 +88,29 @@ public partial class MonitorViewModel : ObservableObject
         int dequeuedCount = 0;
         while (_eventQueue.TryDequeue(out string? item))
         {
-            _allCapturedHistory.Add(item);
-            if (_allCapturedHistory.Count > 1500)
+            // Use Queue.Dequeue() O(1) instead of List.RemoveAt(0) O(N) array shift
+            _allCapturedHistory.Enqueue(item);
+            while (_allCapturedHistory.Count > 1500)
             {
-                _allCapturedHistory.RemoveAt(0);
+                _allCapturedHistory.Dequeue();
             }
 
             if (MatchesFilter(item))
             {
                 RecentEvents.Insert(0, item);
-                if (RecentEvents.Count > 200)
+                if (RecentEvents.Count > 180)
                 {
                     RecentEvents.RemoveAt(RecentEvents.Count - 1);
                 }
                 anyAdded = true;
             }
 
-            if (++dequeuedCount >= 60)
+            if (++dequeuedCount >= 40)
                 break;
         }
 
         if (!anyAdded && _eventQueue.Count > 500)
         {
-            // Drain excess backlog during massive extraction bursts so UI stays responsive
             while (_eventQueue.Count > 200 && _eventQueue.TryDequeue(out _)) { }
         }
     }
@@ -126,7 +126,7 @@ public partial class MonitorViewModel : ObservableObject
         var filtered = _allCapturedHistory
             .Where(MatchesFilter)
             .Reverse()
-            .Take(200)
+            .Take(180)
             .ToList();
         RecentEvents = new ObservableCollection<string>(filtered);
     }

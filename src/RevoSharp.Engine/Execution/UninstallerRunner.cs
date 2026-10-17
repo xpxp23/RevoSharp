@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,19 +11,12 @@ namespace RevoSharp.Engine.Execution;
 
 public class UninstallerRunner
 {
-    /// <summary>
-    /// Browser and OS shell processes that should never be tracked as part of an uninstaller tree.
-    /// </summary>
     private static readonly HashSet<string> ExcludedShellProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe",
         "iexplore.exe", "explorer.exe", "dllhost.exe", "taskhostw.exe", "svchost.exe"
     };
 
-    /// <summary>
-    /// Script/command hosts that ARE tracked in the parent-child tree so grandchild uninstallers
-    /// spawned by cmd/powershell/rundll32 are never lost, but do not block completion once idle if they are conhost.
-    /// </summary>
     private static readonly HashSet<string> AuxiliaryHostProcesses = new(StringComparer.OrdinalIgnoreCase)
     {
         "conhost.exe"
@@ -78,7 +72,6 @@ public class UninstallerRunner
         string commandToRun;
         string arguments;
 
-        // 1. Determine command line
         if (!forceInteractive && !string.IsNullOrWhiteSpace(app.QuietUninstallString))
         {
             (commandToRun, arguments) = ParseCommand(app.QuietUninstallString);
@@ -91,8 +84,6 @@ public class UninstallerRunner
         {
             (commandToRun, arguments) = ParseCommand(app.UninstallString);
 
-            // Always convert MSI /I{GUID} to /X{GUID} so interactive mode launches direct Uninstall instead of Modify/Repair,
-            // and silent mode performs silent uninstall instead of silent repair!
             if (commandToRun.Contains("msiexec", StringComparison.OrdinalIgnoreCase))
             {
                 arguments = MsiInstallFlagRegex.Replace(arguments, "/X");
@@ -117,13 +108,22 @@ public class UninstallerRunner
             Process? initialProcess = null;
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = commandToRun,
-                    Arguments = arguments,
-                    UseShellExecute = true,
-                    Verb = "runas"
-                };
+                // UWP Store apps must run under the current user token with CreateNoWindow=true (no UAC SID switch or flashing console)
+                var psi = app.IsWindowsApp
+                    ? new ProcessStartInfo
+                    {
+                        FileName = commandToRun,
+                        Arguments = arguments,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                    : new ProcessStartInfo
+                    {
+                        FileName = commandToRun,
+                        Arguments = arguments,
+                        UseShellExecute = true,
+                        Verb = "runas"
+                    };
 
                 if (File.Exists(commandToRun))
                 {
@@ -140,7 +140,6 @@ public class UninstallerRunner
                 int initialPid = initialProcess.Id;
                 onStatusUpdate?.Invoke($"卸载引导进程已启动 (PID: {initialPid})");
 
-                // trackedTreePids includes intermediate script hosts (cmd/powershell/rundll32) so grandchild uninstallers are caught
                 var trackedTreePids = new HashSet<int> { initialPid };
                 int zeroCountGrace = 0;
                 bool isFirstPoll = true;
@@ -155,14 +154,12 @@ public class UninstallerRunner
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    // Short 150ms initial poll catches fast bootstrapper stubs (_iu14D2N.tmp / Au_.exe) before they exit
                     await Task.Delay(isFirstPoll ? 150 : 450, cancellationToken);
                     isFirstPoll = false;
                     if (cancellationToken.IsCancellationRequested) break;
 
                     var snapshot = TakeProcessSnapshot();
 
-                    // 1. Multi-pass transitive closure to catch child + grandchild processes spawned in the same interval
                     bool addedNewChild;
                     do
                     {
@@ -186,8 +183,6 @@ public class UninstallerRunner
                         }
                     } while (addedNewChild);
 
-                    // 2. Detect any process running directly from app.InstallLocation using fast Win32 QueryFullProcessImageName
-                    // (Avoids Process.MainModule cross-bitness Win32Exception storms)
                     if (!string.IsNullOrEmpty(validInstallDirPrefix))
                     {
                         foreach (var entry in snapshot)
@@ -206,7 +201,6 @@ public class UninstallerRunner
                         }
                     }
 
-                    // 3. Filter active processes using the snapshot directly + fast alive check
                     var snapshotPidMap = snapshot.ToDictionary(e => (int)e.th32ProcessID, e => e.szExeFile);
                     var stillRunning = new HashSet<int>();
                     var meaningfulRunningNames = new List<string>();
@@ -276,10 +270,6 @@ public class UninstallerRunner
         }
     }
 
-    /// <summary>
-    /// Checks whether the application's Registry Uninstall entry still exists (e.g., if user clicked Cancel in the wizard).
-    /// Accurately handles both UWP Store packages and 64/32-bit desktop apps.
-    /// </summary>
     public static bool IsAppRegistryEntryStillPresent(InstalledApp app)
     {
         if (string.IsNullOrWhiteSpace(app.RegistryKeyPath)) return false;
@@ -306,9 +296,11 @@ public class UninstallerRunner
                 return uwpKey != null;
             }
 
-            var targetView = subKey.Contains(@"WOW6432Node\", StringComparison.OrdinalIgnoreCase)
-                ? RegistryView.Registry64
-                : (app.Is64Bit ? RegistryView.Registry64 : RegistryView.Registry32);
+            var targetView = !Environment.Is64BitOperatingSystem
+                ? RegistryView.Default
+                : (subKey.Contains(@"WOW6432Node\", StringComparison.OrdinalIgnoreCase)
+                    ? RegistryView.Registry64
+                    : (app.Is64Bit ? RegistryView.Registry64 : RegistryView.Registry32));
 
             using var regBase = RegistryKey.OpenBaseKey(hive, targetView);
             using var key = regBase.OpenSubKey(subKey);
@@ -438,6 +430,33 @@ public class UninstallerRunner
             return string.Empty;
         }
 
+        // Inspect PE FileVersionInfo metadata first to identify Inno Setup, NSIS, WiX Burn, or Squirrel accurately
+        if (File.Exists(fileName))
+        {
+            try
+            {
+                var vi = FileVersionInfo.GetVersionInfo(fileName);
+                string meta = $"{vi.FileDescription} {vi.ProductName} {vi.CompanyName} {vi.Comments}";
+                if (meta.Contains("Inno Setup", StringComparison.OrdinalIgnoreCase))
+                {
+                    return !lowerArgs.Contains("/verysilent") && !lowerArgs.Contains("/silent")
+                        ? "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+                        : string.Empty;
+                }
+                if (meta.Contains("Nullsoft", StringComparison.OrdinalIgnoreCase) ||
+                    meta.Contains("NSIS", StringComparison.OrdinalIgnoreCase))
+                {
+                    return !lowerArgs.Contains("/s") ? "/S" : string.Empty;
+                }
+                if (meta.Contains("WiX", StringComparison.OrdinalIgnoreCase) ||
+                    meta.Contains("Burn", StringComparison.OrdinalIgnoreCase))
+                {
+                    return !lowerArgs.Contains("/quiet") ? "/uninstall /quiet /norestart" : string.Empty;
+                }
+            }
+            catch { }
+        }
+
         if (lowerFile.StartsWith("unins00") || lowerFile.Equals("unins.exe"))
         {
             if (!lowerArgs.Contains("/verysilent") && !lowerArgs.Contains("/silent"))
@@ -447,9 +466,14 @@ public class UninstallerRunner
             return string.Empty;
         }
 
+        if (lowerFile.Equals("update.exe") && lowerArgs.Contains("--uninstall"))
+        {
+            return !lowerArgs.Contains("-s") ? "-s" : string.Empty;
+        }
+
         if (lowerFile.Equals("uninstall.exe") || lowerFile.Equals("uninst.exe"))
         {
-            if (!lowerArgs.Contains("/s") && !lowerArgs.Contains("--uninstall"))
+            if (!lowerArgs.Contains("/s") && !lowerArgs.Contains("--uninstall") && !lowerArgs.Contains("/quiet"))
             {
                 return "/S";
             }

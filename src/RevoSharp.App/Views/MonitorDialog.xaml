@@ -7,7 +7,7 @@
         xmlns:vm="clr-namespace:RevoSharp.App.ViewModels"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
-        Title="实时安装监控向导"
+        Title="实时安装监控向导 (v2.3 Pro)"
         Height="660" Width="920"
         MinHeight="500" MinWidth="720"
         WindowStartupLocation="CenterOwner"
@@ -34,12 +34,12 @@
 
         <!-- 1. TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="实时安装监控向导"
+                     Title="实时安装监控向导 (v2.3 Pro)"
                      ShowMaximize="True"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Record24}">
             <ui:TitleBar.Header>
-                <TextBlock Text="ETW 内核追踪 · MSI 服务关联 · KCB 注册表路径还原"
+                <TextBlock Text="ETW 内核追踪 · MSI 服务关联 · KCB 句柄生命周期还原"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                            VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
             </ui:TitleBar.Header>
@@ -113,7 +113,7 @@
 
                     <Border Grid.Column="0" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8" Margin="0,0,8,0">
                         <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Document24" FontSize="20" Foreground="#60CDFF" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <ui:SymbolIcon Symbol="Document24" FontSize="20" Foreground="{DynamicResource RevoAccentCyanBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
                             <StackPanel>
                                 <TextBlock Text="新建/写入文件" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Text="{Binding CapturedFiles}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
@@ -123,7 +123,7 @@
 
                     <Border Grid.Column="1" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8" Margin="0,0,8,0">
                         <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Code24" FontSize="20" Foreground="#6CCB5F" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <ui:SymbolIcon Symbol="Code24" FontSize="20" Foreground="{DynamicResource RevoAccentGreenBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
                             <StackPanel>
                                 <TextBlock Text="注册表键/值变更" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Text="{Binding CapturedRegistry}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
@@ -133,7 +133,7 @@
 
                     <Border Grid.Column="2" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8" Margin="0,0,8,0">
                         <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Apps24" FontSize="20" Foreground="#C395FF" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <ui:SymbolIcon Symbol="Apps24" FontSize="20" Foreground="{DynamicResource RevoAccentPurpleBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
                             <StackPanel>
                                 <TextBlock Text="追踪进程树节点" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Text="{Binding TrackedProcesses}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
@@ -143,7 +143,7 @@
 
                     <Border Grid.Column="3" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8">
                         <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon Symbol="Clock24" FontSize="20" Foreground="#FCE100" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <ui:SymbolIcon Symbol="Clock24" FontSize="20" Foreground="{DynamicResource RevoAccentAmberBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
                             <StackPanel>
                                 <TextBlock Text="监控持续时间" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                 <TextBlock Text="{Binding ElapsedTimeDisplay}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
@@ -170,7 +170,7 @@
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0"
                                 Visibility="{Binding IsMonitoring, Converter={StaticResource BoolToVis}}">
                         <ui:ProgressRing Width="16" Height="16" IsIndeterminate="True" Margin="0,0,8,0" />
-                        <TextBlock Text="ETW 内核监听运行中（支持 180ms 批量节流刷新，零 UI 阻塞）"
+                        <TextBlock Text="ETW 内核监听运行中（支持 180ms 环形缓冲节流刷新，零 UI 阻塞）"
                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                    VerticalAlignment="Center"
                                    FontSize="12" />

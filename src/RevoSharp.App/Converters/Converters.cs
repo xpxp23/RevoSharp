@@ -97,6 +97,10 @@ public class StringToSymbolRegularConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
 }
 
+/// <summary>
+/// Non-blocking application icon loader & converter: returns cached frozen ImageSource immediately if ready,
+/// and preloads icons on a background worker with batched UI thread updates so scrolling never blocks on disk I/O.
+/// </summary>
 public class AppIconConverter : IValueConverter
 {
     private static readonly ConcurrentDictionary<string, ImageSource?> IconCache = new(StringComparer.OrdinalIgnoreCase);
@@ -109,13 +113,81 @@ public class AppIconConverter : IValueConverter
 
     public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        if (value is not InstalledApp app) return null;
-        return IconCache.GetOrAdd(app.Id, _ => ExtractAppIcon(app));
+        if (value is ImageSource directImg)
+            return directImg;
+
+        if (value is InstalledApp app)
+        {
+            if (app.CachedIcon is ImageSource appImg)
+                return appImg;
+
+            if (IconCache.TryGetValue(app.Id, out var cached))
+                return cached;
+        }
+
+        return null;
     }
 
-    private static ImageSource? ExtractAppIcon(InstalledApp app)
+    public static void PreloadIconsInBackground(
+        IEnumerable<InstalledApp> apps,
+        CancellationToken token,
+        Action<Action>? uiDispatcher = null)
     {
-        var candidates = new List<(string FilePath, int IconIndex)>();
+        Task.Run(() =>
+        {
+            var batch = new List<(InstalledApp App, ImageSource Icon)>(16);
+
+            void FlushBatch()
+            {
+                if (batch.Count == 0) return;
+                var toApply = batch.ToArray();
+                batch.Clear();
+
+                if (uiDispatcher != null)
+                {
+                    uiDispatcher(() =>
+                    {
+                        foreach (var (targetApp, img) in toApply)
+                        {
+                            targetApp.CachedIcon = img;
+                        }
+                    });
+                }
+                else
+                {
+                    foreach (var (targetApp, img) in toApply)
+                    {
+                        targetApp.CachedIcon = img;
+                    }
+                }
+            }
+
+            foreach (var app in apps)
+            {
+                if (token.IsCancellationRequested) break;
+                if (app.CachedIcon != null) continue;
+
+                var icon = IconCache.GetOrAdd(app.Id, _ => ExtractAppIconFast(app));
+                if (icon != null)
+                {
+                    batch.Add((app, icon));
+                    if (batch.Count >= 16)
+                    {
+                        FlushBatch();
+                    }
+                }
+            }
+
+            if (!token.IsCancellationRequested)
+            {
+                FlushBatch();
+            }
+        }, token);
+    }
+
+    private static ImageSource? ExtractAppIconFast(InstalledApp app)
+    {
+        var candidates = new List<(string FilePath, int IconIndex)>(3);
 
         if (!string.IsNullOrWhiteSpace(app.DisplayIcon))
         {
@@ -134,20 +206,6 @@ public class AppIconConverter : IValueConverter
         if (!string.IsNullOrEmpty(uninstallExe) && !uninstallExe.Contains("msiexec", StringComparison.OrdinalIgnoreCase))
         {
             candidates.Add((uninstallExe, 0));
-        }
-
-        if (!string.IsNullOrWhiteSpace(app.InstallLocation) && Directory.Exists(app.InstallLocation))
-        {
-            try
-            {
-                var firstExe = Directory.GetFiles(app.InstallLocation, "*.exe")
-                    .FirstOrDefault(f => !Path.GetFileName(f).StartsWith("unins", StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrEmpty(firstExe))
-                {
-                    candidates.Add((firstExe, 0));
-                }
-            }
-            catch { }
         }
 
         foreach (var (path, iconIndex) in candidates)

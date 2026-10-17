@@ -11,5 +11,8 @@ public enum ResidualCategory
     FirewallRule,
     ScheduledTask,
     MsiMetadata,
-    ShellExtension
+    ShellExtension,
+    EnvironmentPath,
+    BrowserExtension,
+    DriverPackage
 }

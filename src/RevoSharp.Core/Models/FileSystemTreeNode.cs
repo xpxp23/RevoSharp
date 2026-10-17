@@ -16,6 +16,10 @@ public class FileSystemTreeNode : INotifyPropertyChanged
     public ResidualItem? AssociatedItem { get; set; }
 
     public ObservableCollection<FileSystemTreeNode> Children { get; set; } = [];
+    public Dictionary<string, FileSystemTreeNode> ChildLookup { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool IsContainerOnly => !IsMatched;
+    public double NodeOpacity => IsMatched ? 1.0 : 0.72;
 
     private bool? _isChecked = true;
     public bool? IsChecked
@@ -79,7 +83,8 @@ public class FileSystemTreeNode : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Pure read-only projection from ResidualItem.IsSelected onto TreeNode.IsChecked without mutating AssociatedItem.IsSelected.
+    /// Synchronizes TreeNode check state from ResidualItem.IsSelected and automatically protects parent directory items
+    /// if any child item under them was deselected in either Flat or Tree mode.
     /// </summary>
     public void SyncFromItemSelection()
     {
@@ -92,8 +97,14 @@ public class FileSystemTreeNode : INotifyPropertyChanged
         {
             bool allChildrenChecked = Children.All(c => c.IsChecked == true);
             bool allChildrenUnchecked = Children.All(c => c.IsChecked == false);
-            bool? selfState = AssociatedItem?.IsSelected;
 
+            // If any child is unchecked or indeterminate, the parent directory item itself cannot remain whole-folder selected
+            if (!allChildrenChecked && AssociatedItem != null && AssociatedItem.IsSelected)
+            {
+                AssociatedItem.IsSelected = false;
+            }
+
+            bool? selfState = AssociatedItem?.IsSelected;
             bool isAllTrue = allChildrenChecked && (selfState ?? true);
             bool isAllFalse = allChildrenUnchecked && !(selfState ?? false);
             bool? computed = isAllTrue ? true : (isAllFalse ? false : null);
@@ -130,14 +141,16 @@ public class FileSystemTreeNode : INotifyPropertyChanged
             AssociatedItem.IsSelected = newState == true;
         }
 
-        if (_isChecked != newState)
+        bool stateChanged = _isChecked != newState;
+        if (stateChanged)
         {
             _isChecked = newState;
             OnPropertyChanged(nameof(IsChecked));
-            if (notifyParent)
-            {
-                Parent?.RecalculateCheckStateFromChildren();
-            }
+        }
+
+        if (notifyParent)
+        {
+            Parent?.RecalculateCheckStateFromChildren();
         }
     }
 
@@ -145,6 +158,7 @@ public class FileSystemTreeNode : INotifyPropertyChanged
     {
         ResidualCategory.Shortcut => "Link24",
         ResidualCategory.ScheduledTask => "Clock24",
+        ResidualCategory.DriverPackage => "Wrench24",
         ResidualCategory.File => "Document24",
         _ => IsFile ? "Document24" : "Folder24"
     };
@@ -153,6 +167,7 @@ public class FileSystemTreeNode : INotifyPropertyChanged
     {
         ResidualCategory.Shortcut => "🔗",
         ResidualCategory.ScheduledTask => "⏰",
+        ResidualCategory.DriverPackage => "🔧",
         ResidualCategory.File => "📄",
         _ => "📁"
     };

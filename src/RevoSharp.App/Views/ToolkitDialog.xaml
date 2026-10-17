@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
-        Title="系统工具箱与备份管理中心"
-        Height="680" Width="1080"
-        MinHeight="520" MinWidth="860"
+        Title="系统工具箱与备份管理中心 (v2.3 Pro)"
+        Height="700" Width="1100"
+        MinHeight="540" MinWidth="880"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -23,12 +23,12 @@
         </Grid.RowDefinitions>
 
         <ui:TitleBar Grid.Row="0"
-                     Title="系统工具箱与多级备份还原中心"
+                     Title="系统工具箱与多级备份还原中心 (v2.3 Pro)"
                      ShowMaximize="True"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Shield24}">
             <ui:TitleBar.Header>
-                <TextBlock Text="开机自启管控 · 注册表/任务/文件一键还原 · 安装监控日志库"
+                <TextBlock Text="开机自启管控 · 注册表/任务/环境变量/文件一键还原 · 安装监控日志库"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                            VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
             </ui:TitleBar.Header>
@@ -40,7 +40,7 @@
                 <TabItem>
                     <TabItem.Header>
                         <StackPanel Orientation="Horizontal" Margin="4,2">
-                            <ui:SymbolIcon Symbol="Rocket24" FontSize="14" Foreground="#60CDFF" Margin="0,0,6,0" VerticalAlignment="Center" />
+                            <ui:SymbolIcon Symbol="Rocket24" FontSize="14" Foreground="{DynamicResource RevoAccentCyanBrush}" Margin="0,0,6,0" VerticalAlignment="Center" />
                             <TextBlock Text="开机自启动管理器" FontWeight="SemiBold" VerticalAlignment="Center" />
                         </StackPanel>
                     </TabItem.Header>
@@ -79,33 +79,46 @@
                                 </StackPanel>
                             </Grid>
 
-                            <ui:DataGrid x:Name="AutostartGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                                         CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
-                                <ui:DataGrid.ContextMenu>
-                                    <ContextMenu>
-                                        <MenuItem Header="无损切换 启用 / 禁用" Click="OnToggleAutostartClick" />
-                                        <MenuItem Header="打开所在文件夹 / 定位位置" Click="OnOpenAutostartLocationClick" />
-                                        <Separator />
-                                        <MenuItem Header="安全备份并移除此自启项" Click="OnRemoveAutostartClick" />
-                                    </ContextMenu>
-                                </ui:DataGrid.ContextMenu>
-                                <DataGrid.Columns>
-                                    <DataGridTemplateColumn Header="状态" Width="85" SortMemberPath="IsEnabled">
-                                        <DataGridTemplateColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <Grid VerticalAlignment="Center">
-                                                    <ui:Badge Content="已启用" Appearance="Success" Visibility="{Binding IsEnabled, Converter={StaticResource BoolToVis}}" />
-                                                    <ui:Badge Content="已禁用" Appearance="Caution" Visibility="{Binding IsEnabled, Converter={StaticResource InvBoolToVis}}" />
-                                                </Grid>
-                                            </DataTemplate>
-                                        </DataGridTemplateColumn.CellTemplate>
-                                    </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="启动项名称" Binding="{Binding Name}" Width="185" />
-                                    <DataGridTextColumn Header="驻留位置类型" Binding="{Binding LocationType}" Width="140" />
-                                    <DataGridTextColumn Header="发行商" Binding="{Binding Publisher}" Width="145" />
-                                    <DataGridTextColumn Header="启动命令行 / 目标路径" Binding="{Binding Command}" Width="*" />
-                                </DataGrid.Columns>
-                            </ui:DataGrid>
+                            <Grid Grid.Row="1">
+                                <ui:DataGrid x:Name="AutostartGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                             CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                                    <ui:DataGrid.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="无损切换 启用 / 禁用" Click="OnToggleAutostartClick" />
+                                            <MenuItem Header="打开所在文件夹 / 定位位置" Click="OnOpenAutostartLocationClick" />
+                                            <Separator />
+                                            <MenuItem Header="安全备份并移除此自启项" Click="OnRemoveAutostartClick" />
+                                        </ContextMenu>
+                                    </ui:DataGrid.ContextMenu>
+                                    <DataGrid.Columns>
+                                        <DataGridTemplateColumn Header="状态" Width="85" SortMemberPath="IsEnabled">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Grid VerticalAlignment="Center">
+                                                        <ui:Badge Content="已启用" Appearance="Success" Visibility="{Binding IsEnabled, Converter={StaticResource BoolToVis}}" />
+                                                        <ui:Badge Content="已禁用" Appearance="Caution" Visibility="{Binding IsEnabled, Converter={StaticResource InvBoolToVis}}" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTextColumn Header="启动项名称" Binding="{Binding Name}" Width="185" />
+                                        <DataGridTextColumn Header="驻留位置类型" Binding="{Binding LocationType}" Width="140" />
+                                        <DataGridTextColumn Header="发行商" Binding="{Binding Publisher}" Width="145" />
+                                        <DataGridTextColumn Header="启动命令行 / 目标路径" Binding="{Binding Command}" Width="*" />
+                                    </DataGrid.Columns>
+                                </ui:DataGrid>
+
+                                <!-- Empty State Overlay for Autorun -->
+                                <StackPanel x:Name="AutostartEmptyOverlay"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            IsHitTestVisible="False"
+                                            Visibility="Collapsed">
+                                    <ui:SymbolIcon Symbol="Rocket24" FontSize="38" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                                    <TextBlock Text="未发现匹配的开机自启动项" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                                    <TextBlock Text="系统当前无匹配的注册表 Run、启动文件夹或开机登录触发计划任务" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Grid>
                         </Grid>
                     </Border>
                 </TabItem>
@@ -114,7 +127,7 @@
                 <TabItem>
                     <TabItem.Header>
                         <StackPanel Orientation="Horizontal" Margin="4,2">
-                            <ui:SymbolIcon Symbol="Shield24" FontSize="14" Foreground="#6CCB5F" Margin="0,0,6,0" VerticalAlignment="Center" />
+                            <ui:SymbolIcon Symbol="Shield24" FontSize="14" Foreground="{DynamicResource RevoAccentGreenBrush}" Margin="0,0,6,0" VerticalAlignment="Center" />
                             <TextBlock Text="多级备份还原中心" FontWeight="SemiBold" VerticalAlignment="Center" />
                         </StackPanel>
                     </TabItem.Header>
@@ -132,7 +145,7 @@
                             </Grid.RowDefinitions>
 
                             <Grid Grid.Row="0" Margin="0,0,0,10">
-                                <TextBlock Text="完整记录卸载清理与自启管理的注册表、计划任务与文件备份档案（悬停或选中可查看条目明细）"
+                                <TextBlock Text="完整记录卸载清理与自启管理的合并注册表、计划任务、环境变量与文件备份档案（选中即可在下方面板浏览全部条目明细）"
                                            VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
                                 <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
                                     <ui:Button Content="打开备份目录" Icon="{ui:SymbolIcon FolderOpen24}" Margin="0,0,8,0" Click="OnOpenBackupFolderClick" />
@@ -141,36 +154,74 @@
                                 </StackPanel>
                             </Grid>
 
-                            <ui:DataGrid x:Name="BackupGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                                         CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column"
-                                         SelectionChanged="OnBackupSelectionChanged">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="关联项目名称" Binding="{Binding AppName}" Width="230" />
-                                    <DataGridTextColumn Header="备份时间" Binding="{Binding CreatedTimeDisplay}" Width="160" />
-                                    <DataGridTemplateColumn Header="备份内容摘要 (悬停查看明细)" Width="*">
-                                        <DataGridTemplateColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <TextBlock Text="{Binding SummaryText}"
-                                                           VerticalAlignment="Center"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           ToolTip="{Binding DetailsTooltipText}" />
-                                            </DataTemplate>
-                                        </DataGridTemplateColumn.CellTemplate>
-                                    </DataGridTemplateColumn>
-                                </DataGrid.Columns>
-                            </ui:DataGrid>
+                            <Grid Grid.Row="1">
+                                <ui:DataGrid x:Name="BackupGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                             CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                                             SelectionChanged="OnBackupSelectionChanged">
+                                    <DataGrid.Columns>
+                                        <DataGridTemplateColumn Header="状态" Width="85" SortMemberPath="IsRestored">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Grid VerticalAlignment="Center">
+                                                        <ui:Badge Content="已还原" Appearance="Success" Visibility="{Binding IsRestored, Converter={StaticResource BoolToVis}}" />
+                                                        <ui:Badge Content="可还原" Appearance="Primary" Visibility="{Binding IsRestored, Converter={StaticResource InvBoolToVis}}" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTextColumn Header="关联项目名称" Binding="{Binding AppName}" Width="220" />
+                                        <DataGridTextColumn Header="备份时间" Binding="{Binding CreatedTimeDisplay}" Width="155" />
+                                        <DataGridTemplateColumn Header="备份内容摘要" Width="*">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding SummaryText}"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding DetailsTooltipText}" />
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                    </DataGrid.Columns>
+                                </ui:DataGrid>
 
+                                <!-- Empty State Overlay for Backups -->
+                                <StackPanel x:Name="BackupEmptyOverlay"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            IsHitTestVisible="False"
+                                            Visibility="Collapsed">
+                                    <ui:SymbolIcon Symbol="Shield24" FontSize="38" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                                    <TextBlock Text="暂无历史清理备份档案" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                                    <TextBlock Text="当您执行软件残留清理或移除自启动项时，系统将自动在此生成可一键原位还原的备份包" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Scrollable Multi-Line Backup Item Inspector Panel -->
                             <Border Grid.Row="2"
                                     Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}"
                                     CornerRadius="6"
-                                    Padding="10,7"
+                                    Padding="10,8"
                                     Margin="0,8,0,0">
-                                <TextBlock x:Name="BackupPreviewTextBlock"
-                                           Text="选中任意备份记录可在此预览其包含的注册表路径、计划任务与文件快照详情。"
-                                           FontFamily="Consolas, Microsoft YaHei UI"
-                                           FontSize="11.5"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                           TextTrimming="CharacterEllipsis" />
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="86" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock x:Name="BackupPreviewTextBlock"
+                                               Grid.Row="0"
+                                               Text="选中任意备份记录可在此滚动检视其包含的注册表路径、计划任务、环境变量与文件快照详情："
+                                               FontWeight="SemiBold"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Margin="0,0,0,4" />
+                                    <ListBox x:Name="BackupDetailsListBox"
+                                             Grid.Row="1"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
+                                             FontSize="11.5"
+                                             Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                </Grid>
                             </Border>
                         </Grid>
                     </Border>
@@ -180,7 +231,7 @@
                 <TabItem>
                     <TabItem.Header>
                         <StackPanel Orientation="Horizontal" Margin="4,2">
-                            <ui:SymbolIcon Symbol="DocumentText24" FontSize="14" Foreground="#C395FF" Margin="0,0,6,0" VerticalAlignment="Center" />
+                            <ui:SymbolIcon Symbol="DocumentText24" FontSize="14" Foreground="{DynamicResource RevoAccentPurpleBrush}" Margin="0,0,6,0" VerticalAlignment="Center" />
                             <TextBlock Text="已追踪安装日志库" FontWeight="SemiBold" VerticalAlignment="Center" />
                         </StackPanel>
                     </TabItem.Header>
@@ -208,14 +259,28 @@
                                 </StackPanel>
                             </Grid>
 
-                            <ui:DataGrid x:Name="TraceLogGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
-                                         CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="监控软件名称" Binding="{Binding AppName}" Width="220" />
-                                    <DataGridTextColumn Header="安装包路径" Binding="{Binding InstallerPath}" Width="240" />
-                                    <DataGridTextColumn Header="捕获详情" Binding="{Binding SummaryText}" Width="*" />
-                                </DataGrid.Columns>
-                            </ui:DataGrid>
+                            <Grid Grid.Row="1">
+                                <ui:DataGrid x:Name="TraceLogGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                             CanUserAddRows="False" SelectionMode="Single" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="监控软件名称" Binding="{Binding AppName}" Width="220" />
+                                        <DataGridTextColumn Header="关联注册表显示名" Binding="{Binding DetectedDisplayName}" Width="200" />
+                                        <DataGridTextColumn Header="安装包路径" Binding="{Binding InstallerPath}" Width="220" />
+                                        <DataGridTextColumn Header="捕获详情" Binding="{Binding SummaryText}" Width="*" />
+                                    </DataGrid.Columns>
+                                </ui:DataGrid>
+
+                                <!-- Empty State Overlay for TraceLogs -->
+                                <StackPanel x:Name="TraceLogEmptyOverlay"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            IsHitTestVisible="False"
+                                            Visibility="Collapsed">
+                                    <ui:SymbolIcon Symbol="Record24" FontSize="38" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                                    <TextBlock Text="尚未录制任何安装监控日志" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                                    <TextBlock Text="在主界面点击「监视安装」启动新软件安装包，即可通过 ETW 内核追踪记录全量文件与注册表变更" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Grid>
                         </Grid>
                     </Border>
                 </TabItem>

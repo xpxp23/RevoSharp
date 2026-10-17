@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Diagnostics.Tracing.Parsers;
@@ -69,8 +70,6 @@ public class EtwInstallMonitor : IDisposable
         {
             try
             {
-                // Prefer custom session name first so we don't disrupt external Process Monitor / WPR sessions;
-                // fallback to KernelSessionName on older OS builds if custom kernel session is rejected.
                 try
                 {
                     TraceEventSession.GetActiveSession(CustomSessionName)?.Dispose();
@@ -85,7 +84,6 @@ public class EtwInstallMonitor : IDisposable
                 catch
                 {
                     _session?.Dispose();
-                    TraceEventSession.GetActiveSession(KernelTraceEventParser.KernelSessionName)?.Dispose();
                     _session = new TraceEventSession(KernelTraceEventParser.KernelSessionName) { StopOnDispose = true };
                     _session.EnableKernelProvider(
                         KernelTraceEventParser.Keywords.FileIOInit |
@@ -122,7 +120,7 @@ public class EtwInstallMonitor : IDisposable
                     }
                 };
 
-                // Track KCB (Key Control Block) handles so relative KeyNames in RegistryCreate / RegistrySetValue resolve accurately
+                // Track KCB (Key Control Block) lifecycle (Create, Rundown, Open, and Delete) so recycled KCB handles never cross-pollinate
                 _session.Source.Kernel.RegistryKCBCreate += (RegistryTraceData data) =>
                 {
                     CacheKcbHandle(data.KeyHandle, data.KeyName);
@@ -131,6 +129,17 @@ public class EtwInstallMonitor : IDisposable
                 _session.Source.Kernel.RegistryKCBRundownBegin += (RegistryTraceData data) =>
                 {
                     CacheKcbHandle(data.KeyHandle, data.KeyName);
+                };
+
+                _session.Source.Kernel.RegistryKCBDelete += (RegistryTraceData data) =>
+                {
+                    if (data.KeyHandle != 0)
+                    {
+                        lock (_lock)
+                        {
+                            _kcbHandleToPath.Remove(data.KeyHandle);
+                        }
+                    }
                 };
 
                 _session.Source.Kernel.RegistryOpen += (RegistryTraceData data) =>
@@ -184,21 +193,22 @@ public class EtwInstallMonitor : IDisposable
                     }
                 };
 
-                // Listen to registry value creation/modification (e.g. Run, App Paths, File Associations)
+                // Listen to registry value creation/modification (including Default '@' values where ValueName is empty)
                 _session.Source.Kernel.RegistrySetValue += (RegistryTraceData data) =>
                 {
                     lock (_lock)
                     {
-                        if (_trackedPids.Contains(data.ProcessID) && !string.IsNullOrWhiteSpace(data.ValueName))
+                        if (_trackedPids.Contains(data.ProcessID))
                         {
                             string fullRaw = ResolveRegistryFullPath(data.KeyHandle, data.KeyName);
                             string normKey = NormalizeRegistryPath(fullRaw);
                             if (IsValidTargetRegistryKey(normKey))
                             {
-                                string token = $"{normKey}||{data.ValueName}";
+                                string valName = string.IsNullOrEmpty(data.ValueName) ? "(Default)" : data.ValueName;
+                                string token = $"{normKey}||{valName}";
                                 if (_modifiedRegistryValues.Add(token))
                                 {
-                                    OnItemCaptured?.Invoke($"[注册表值] {normKey} ➔ [{data.ValueName}]");
+                                    OnItemCaptured?.Invoke($"[注册表值] {normKey} ➔ [{valName}]");
                                 }
                             }
                         }
@@ -217,8 +227,6 @@ public class EtwInstallMonitor : IDisposable
         await sessionReadyTcs.Task;
 
         // 2. Launch the installer process AFTER ETW is actively listening.
-        // Explicitly wrap .msi/.msp packages with msiexec.exe /i so Verb="runas" never fails on .msi files
-        // and pre-existing msiserver worker processes are tracked accurately.
         try
         {
             bool isMsiPackage = installerPath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ||
@@ -261,10 +269,6 @@ public class EtwInstallMonitor : IDisposable
         await etwTask;
     }
 
-    /// <summary>
-    /// Attaches any active msiexec.exe (Windows Installer service worker) processes to _trackedPids
-    /// so MSI packages unpacked by an already-running msiserver service are captured completely.
-    /// </summary>
     private void AttachRunningMsiExecProcesses()
     {
         try
@@ -287,10 +291,6 @@ public class EtwInstallMonitor : IDisposable
         catch { }
     }
 
-    /// <summary>
-    /// Allows launching the newly installed program while ETW monitoring is still active
-    /// so first-run AppData/Registry configuration items are also captured (Revo Pro best practice).
-    /// </summary>
     public bool TryLaunchDetectedInstalledApp(out string launchedExePath)
     {
         launchedExePath = string.Empty;
@@ -330,11 +330,17 @@ public class EtwInstallMonitor : IDisposable
     private void CacheKcbHandle(ulong handle, string? keyName)
     {
         if (handle == 0 || string.IsNullOrWhiteSpace(keyName)) return;
-        if (keyName.StartsWith(@"\REGISTRY\", StringComparison.OrdinalIgnoreCase))
+        string trimmed = keyName.Trim();
+        lock (_lock)
         {
-            lock (_lock)
+            if (trimmed.StartsWith(@"\REGISTRY\", StringComparison.OrdinalIgnoreCase))
             {
-                _kcbHandleToPath[handle] = keyName;
+                _kcbHandleToPath[handle] = trimmed;
+            }
+            else if (_kcbHandleToPath.TryGetValue(handle, out string? existingBase) &&
+                     !existingBase.EndsWith("\\" + trimmed, StringComparison.OrdinalIgnoreCase))
+            {
+                _kcbHandleToPath[handle] = $@"{existingBase.TrimEnd('\\')}\{trimmed.TrimStart('\\')}";
             }
         }
     }
@@ -349,9 +355,11 @@ public class EtwInstallMonitor : IDisposable
 
         if (handle != 0 && _kcbHandleToPath.TryGetValue(handle, out string? baseKcbPath))
         {
-            return string.IsNullOrEmpty(raw)
-                ? baseKcbPath
-                : $@"{baseKcbPath.TrimEnd('\\')}\{raw.TrimStart('\\')}";
+            if (string.IsNullOrEmpty(raw))
+                return baseKcbPath;
+            if (baseKcbPath.EndsWith("\\" + raw, StringComparison.OrdinalIgnoreCase))
+                return baseKcbPath;
+            return $@"{baseKcbPath.TrimEnd('\\')}\{raw.TrimStart('\\')}";
         }
 
         return raw;
@@ -407,29 +415,25 @@ public class EtwInstallMonitor : IDisposable
 
             log = new TraceLog
             {
-                AppName = !string.IsNullOrWhiteSpace(detectedName) ? detectedName : _appName,
-                DetectedDisplayName = detectedName,
+                AppName = !string.IsNullOrWhiteSpace(_appName) ? _appName : detectedName,
+                DetectedDisplayName = !string.IsNullOrWhiteSpace(detectedName) ? detectedName : _appName,
                 UninstallKeyId = detectedKeyId,
                 DetectedInstallLocation = detectedLoc,
                 InstallerPath = _installerPath,
+                CreatedTime = DateTime.Now,
                 CreatedFiles = finalFiles,
                 CreatedRegistryKeys = _createdRegistryKeys.OrderBy(x => x).ToList(),
                 ModifiedRegistryValues = _modifiedRegistryValues.OrderBy(x => x).ToList()
             };
         }
 
-        string primaryName = !string.IsNullOrWhiteSpace(log.DetectedDisplayName) ? log.DetectedDisplayName : _appName;
+        // Save a single canonical .revolog.json.gz file (trace_index.json already indexes both AppName and DetectedDisplayName,
+        // avoiding duplicate physical files in the Traced Programs library!)
+        string primaryName = !string.IsNullOrWhiteSpace(log.DetectedDisplayName) ? log.DetectedDisplayName : log.AppName;
         string safePrimary = AppLocator.SanitizeFileName(primaryName);
         string logPath = Path.Combine(LogDirectory, $"{safePrimary}.revolog.json.gz");
         log.FilePath = logPath;
         await TraceLogSerializer.SaveAsync(log, logPath);
-
-        string safeUser = AppLocator.SanitizeFileName(_appName);
-        if (!string.IsNullOrWhiteSpace(safeUser) && !safeUser.Equals(safePrimary, StringComparison.OrdinalIgnoreCase))
-        {
-            string aliasPath = Path.Combine(LogDirectory, $"{safeUser}.revolog.json.gz");
-            await TraceLogSerializer.SaveAsync(log, aliasPath);
-        }
 
         return log;
     }
@@ -470,7 +474,6 @@ public class EtwInstallMonitor : IDisposable
                 }
             }
 
-            // Do not blindly rewrite unmapped \Device\HarddiskVolumeX or \Device\Mup to C:!
             return string.Empty;
         }
         return raw;
@@ -558,17 +561,20 @@ public class EtwInstallMonitor : IDisposable
         return true;
     }
 
+    private static IEnumerable<(RegistryHive Hive, RegistryView View, string Path)> GetUninstallRoots()
+    {
+        yield return (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
+        if (Environment.Is64BitOperatingSystem)
+        {
+            yield return (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
+        }
+        yield return (RegistryHive.CurrentUser, RegistryView.Default, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
+    }
+
     private static void CaptureUninstallSnapshot(HashSet<string> targetSet)
     {
         targetSet.Clear();
-        var roots = new[]
-        {
-            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-            (RegistryHive.CurrentUser, RegistryView.Default, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
-        };
-
-        foreach (var (hive, view, path) in roots)
+        foreach (var (hive, view, path) in GetUninstallRoots())
         {
             try
             {
@@ -586,14 +592,7 @@ public class EtwInstallMonitor : IDisposable
 
     public (string DisplayName, string KeyId, string InstallLocation) DetectNewUninstallEntry()
     {
-        var roots = new[]
-        {
-            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-            (RegistryHive.CurrentUser, RegistryView.Default, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
-        };
-
-        foreach (var (hive, view, path) in roots)
+        foreach (var (hive, view, path) in GetUninstallRoots())
         {
             try
             {

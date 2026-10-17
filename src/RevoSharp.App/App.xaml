@@ -9,6 +9,32 @@
                 <ui:ControlsDictionary />
                 <ui:ThemesDictionary Theme="Dark" />
             </ResourceDictionary.MergedDictionaries>
+
+            <!-- Semantic Dynamic Theme Brushes (Automatically updated by App.ApplyThemeMode for Dark / Light / System) -->
+            <SolidColorBrush x:Key="RevoPillSelectedBackgroundBrush" Color="#2E0078D4" />
+            <SolidColorBrush x:Key="RevoPillSelectedBorderBrush" Color="#60CDFF" />
+            <SolidColorBrush x:Key="RevoAccentCyanBrush" Color="#60CDFF" />
+            <SolidColorBrush x:Key="RevoAccentCyanTextBrush" Color="#88CCFF" />
+            <SolidColorBrush x:Key="RevoAccentGreenBrush" Color="#6CCB5F" />
+            <SolidColorBrush x:Key="RevoAccentGreenTextBrush" Color="#88EEAA" />
+            <SolidColorBrush x:Key="RevoAccentPurpleBrush" Color="#C395FF" />
+            <SolidColorBrush x:Key="RevoAccentAmberBrush" Color="#FFAA44" />
+            <SolidColorBrush x:Key="RevoAccentRedBrush" Color="#FF6666" />
+
+            <SolidColorBrush x:Key="RevoTagBlueBgBrush" Color="#240078D4" />
+            <SolidColorBrush x:Key="RevoTagBlueBorderBrush" Color="#4460CDFF" />
+            <SolidColorBrush x:Key="RevoTagPurpleBgBrush" Color="#249E77ED" />
+            <SolidColorBrush x:Key="RevoTagPurpleBorderBrush" Color="#44C395FF" />
+            <SolidColorBrush x:Key="RevoTagGreenBgBrush" Color="#2244DD88" />
+            <SolidColorBrush x:Key="RevoTagRedBgBrush" Color="#2EFF4444" />
+            <SolidColorBrush x:Key="RevoTagRedBorderBrush" Color="#55FF6666" />
+            <SolidColorBrush x:Key="RevoTagNeutralBgBrush" Color="#22FFFFFF" />
+
+            <SolidColorBrush x:Key="RevoOverlayMaskBrush" Color="#B8121418" />
+            <SolidColorBrush x:Key="RevoFloatingBarBgBrush" Color="#F21A202C" />
+            <SolidColorBrush x:Key="RevoFloatingBarBorderBrush" Color="#5560CDFF" />
+            <SolidColorBrush x:Key="RevoHudCardBgBrush" Color="#F81C1E26" />
+            <SolidColorBrush x:Key="RevoHudCardBorderBrush" Color="#3AFFFFFF" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

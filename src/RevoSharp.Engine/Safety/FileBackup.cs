@@ -72,6 +72,66 @@ public static class FileBackup
     }
 
     /// <summary>
+    /// High-speed batch Recycle Bin transaction: joins multiple file/folder paths with '\0' and terminates with '\0\0'
+    /// in a single SHFileOperation call, falling back to per-item recycling if any locked file in the batch causes partial failure.
+    /// Returns the set of original paths that were confirmed moved to the Recycle Bin.
+    /// </summary>
+    public static HashSet<string> SendToRecycleBinBatch(IEnumerable<string> paths)
+    {
+        var succeeded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalizedMap = new List<(string RawPath, string CleanPath)>();
+
+        foreach (var raw in paths)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            try
+            {
+                string clean = Path.GetFullPath(raw.Trim().Trim('"')).TrimEnd('\\', '/');
+                if (File.Exists(clean) || Directory.Exists(clean))
+                {
+                    ClearReadOnlyAttributes(clean);
+                    normalizedMap.Add((raw, clean));
+                }
+            }
+            catch { }
+        }
+
+        if (normalizedMap.Count == 0) return succeeded;
+
+        // Execute in chunks of 64 paths per SHFileOperation transaction
+        foreach (var chunk in normalizedMap.Chunk(64))
+        {
+            try
+            {
+                string multiNullJoined = string.Join("\0", chunk.Select(x => x.CleanPath)) + "\0\0";
+                var fileOp = new SHFILEOPSTRUCT
+                {
+                    wFunc = FO_DELETE,
+                    pFrom = multiNullJoined,
+                    fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+                };
+
+                SHFileOperation(ref fileOp);
+            }
+            catch { }
+
+            foreach (var (raw, clean) in chunk)
+            {
+                if (!File.Exists(clean) && !Directory.Exists(clean))
+                {
+                    succeeded.Add(raw);
+                }
+                else if (SendToRecycleBin(clean))
+                {
+                    succeeded.Add(raw);
+                }
+            }
+        }
+
+        return succeeded;
+    }
+
+    /// <summary>
     /// Safely moves a file or folder into the Windows Recycle Bin after clearing read-only attributes.
     /// </summary>
     public static bool SendToRecycleBin(string path)
@@ -118,7 +178,6 @@ public static class FileBackup
 
             if (Directory.Exists(cleanPath))
             {
-                // 1. Register all files first
                 foreach (var file in Directory.EnumerateFiles(cleanPath, "*", new EnumerationOptions
                 {
                     IgnoreInaccessible = true,
@@ -133,7 +192,6 @@ public static class FileBackup
                     MoveFileEx(file, null, MOVEFILE_DELAY_UNTIL_REBOOT);
                 }
 
-                // 2. Register all subdirectories in bottom-up post-order (deepest paths first)
                 var subDirs = Directory.EnumerateDirectories(cleanPath, "*", new EnumerationOptions
                 {
                     IgnoreInaccessible = true,
@@ -148,7 +206,6 @@ public static class FileBackup
                 }
             }
 
-            // 3. Finally register the target file or root directory itself
             return MoveFileEx(cleanPath, null, MOVEFILE_DELAY_UNTIL_REBOOT);
         }
         catch

@@ -7,6 +7,8 @@ namespace RevoSharp.Core.Models;
 public class ResidualItem : INotifyPropertyChanged
 {
     private bool _isSelected;
+    private bool _isLocked;
+    private string _lockedBySummary = string.Empty;
 
     public required ResidualType Type { get; init; }
     public ResidualCategory Category { get; init; } = ResidualCategory.File;
@@ -15,10 +17,15 @@ public class ResidualItem : INotifyPropertyChanged
     public string? ValuePreview { get; init; }
     public string? TaskSchedulerName { get; init; }
     public bool? Is64BitRegistryView { get; init; }
+    public string? EnvironmentVariableName { get; init; }
+    public bool IsSystemEnvironmentVariable { get; init; }
+    public string? PathSegmentToRemove { get; init; }
+    public string? DriverPublishedInfName { get; init; }
     public required ConfidenceLevel Confidence { get; init; }
     public required string Reason { get; init; }
     public long SizeInBytes { get; init; }
     public string SourceAppName { get; set; } = string.Empty;
+    public List<LockingProcessInfo> LockingProcesses { get; set; } = [];
 
     public bool IsSelected
     {
@@ -31,6 +38,42 @@ public class ResidualItem : INotifyPropertyChanged
                 OnPropertyChanged();
             }
         }
+    }
+
+    public bool IsLocked
+    {
+        get => _isLocked;
+        set
+        {
+            if (_isLocked != value)
+            {
+                _isLocked = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public string LockedBySummary
+    {
+        get => _lockedBySummary;
+        set
+        {
+            if (_lockedBySummary != value)
+            {
+                _lockedBySummary = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public void UpdateLockingProcesses(IReadOnlyList<LockingProcessInfo> processes)
+    {
+        LockingProcesses = [.. processes];
+        IsLocked = processes.Count > 0;
+        LockedBySummary = processes.Count > 0
+            ? $"占用: {string.Join(", ", processes.Select(p => $"{p.ProcessName}({p.ProcessId})").Take(2))}" +
+              (processes.Count > 2 ? $" 等{processes.Count}个" : string.Empty)
+            : string.Empty;
     }
 
     public bool HasSourceAppName => !string.IsNullOrWhiteSpace(SourceAppName);
@@ -89,6 +132,9 @@ public class ResidualItem : INotifyPropertyChanged
         ResidualCategory.ScheduledTask => "Clock24",
         ResidualCategory.MsiMetadata => "Box24",
         ResidualCategory.ShellExtension => "Apps24",
+        ResidualCategory.EnvironmentPath => "Code24",
+        ResidualCategory.BrowserExtension => "GlobeSearch24",
+        ResidualCategory.DriverPackage => "Wrench24",
         _ => Type switch
         {
             ResidualType.Directory => "Folder24",
@@ -105,8 +151,11 @@ public class ResidualItem : INotifyPropertyChanged
         ResidualCategory.Service => "系统服务",
         ResidualCategory.FirewallRule => "防火墙规则",
         ResidualCategory.ScheduledTask => "计划任务",
-        ResidualCategory.MsiMetadata => "MSI 元数据",
+        ResidualCategory.MsiMetadata => "MSI 组件",
         ResidualCategory.ShellExtension => "外壳扩展",
+        ResidualCategory.EnvironmentPath => "环境变量",
+        ResidualCategory.BrowserExtension => "浏览器扩展",
+        ResidualCategory.DriverPackage => "驱动组件",
         _ => Type switch
         {
             ResidualType.Directory => "文件夹",

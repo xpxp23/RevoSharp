@@ -59,6 +59,10 @@ public partial class HunterActionHud : Window
 
     public void PositionNear(Point screenPoint)
     {
+        Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double hudWidth = DesiredSize.Width > 100 ? DesiredSize.Width : 568;
+        double hudHeight = DesiredSize.Height > 100 ? DesiredSize.Height : 395;
+
         var source = PresentationSource.FromVisual(this);
         Matrix transform = source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
 
@@ -82,9 +86,6 @@ public partial class HunterActionHud : Window
                 workBottom = bottomRight.Y;
             }
         }
-
-        const double hudWidth = 560;
-        const double hudHeight = 400;
 
         var logicalCursor = transform.Transform(screenPoint);
         double targetX = logicalCursor.X + 16;

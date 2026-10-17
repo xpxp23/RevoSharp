@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Globalization;
+using System.IO;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 using RevoSharp.Core.Models;
@@ -70,7 +72,7 @@ public class AppLocator
 
     /// <summary>
     /// Asynchronously computes real disk directory sizes for installed apps whose registry entry lacked EstimatedSize,
-    /// updating UI rows safely without prematurely disposing the concurrency semaphore on cancellation.
+    /// batching UI property notifications so the UI thread never experiences a Dispatcher invoke storm.
     /// </summary>
     public async Task PopulateMissingSizesAsync(
         IEnumerable<InstalledApp> apps,
@@ -98,7 +100,14 @@ public class AppLocator
             }
         }
 
+        DispatchUpdate(() =>
+        {
+            foreach (var a in missingApps) a.IsSizeCalculating = true;
+        });
+
+        var pendingUpdates = new ConcurrentQueue<(InstalledApp App, long Size)>();
         var semaphore = new SemaphoreSlim(4);
+
         var tasks = missingApps.Select(async app =>
         {
             if (cancellationToken.IsCancellationRequested) return;
@@ -108,21 +117,21 @@ public class AppLocator
                 await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                 acquired = true;
 
-                DispatchUpdate(() => app.IsSizeCalculating = true);
                 long size = await Task.Run(
                     () => ResidualScanner.CalculatePathSize(app.InstallLocation, isDirectory: true),
                     cancellationToken).ConfigureAwait(false);
 
-                if (size > 0 && !cancellationToken.IsCancellationRequested)
+                pendingUpdates.Enqueue((app, size));
+
+                if (pendingUpdates.Count >= 12 && !cancellationToken.IsCancellationRequested)
                 {
-                    DispatchUpdate(() => app.EstimatedSizeInBytes = size);
+                    FlushBatchUpdates(pendingUpdates, DispatchUpdate);
                 }
             }
             catch (OperationCanceledException) { }
             catch { }
             finally
             {
-                DispatchUpdate(() => app.IsSizeCalculating = false);
                 if (acquired)
                 {
                     try { semaphore.Release(); } catch { }
@@ -137,8 +146,38 @@ public class AppLocator
         catch { }
         finally
         {
+            FlushBatchUpdates(pendingUpdates, DispatchUpdate);
+            DispatchUpdate(() =>
+            {
+                foreach (var a in missingApps) a.IsSizeCalculating = false;
+            });
             semaphore.Dispose();
         }
+    }
+
+    private static void FlushBatchUpdates(
+        ConcurrentQueue<(InstalledApp App, long Size)> queue,
+        Action<Action> dispatchUpdate)
+    {
+        var batch = new List<(InstalledApp App, long Size)>();
+        while (queue.TryDequeue(out var item))
+        {
+            batch.Add(item);
+        }
+
+        if (batch.Count == 0) return;
+
+        dispatchUpdate(() =>
+        {
+            foreach (var (app, size) in batch)
+            {
+                if (size > 0)
+                {
+                    app.EstimatedSizeInBytes = size;
+                }
+                app.IsSizeCalculating = false;
+            }
+        });
     }
 
     private static async Task AttachTraceLogsFastAsync(IEnumerable<InstalledApp> apps)
@@ -223,7 +262,6 @@ public class AppLocator
                     string? displayName = appKey.GetValue("DisplayName") as string;
                     if (string.IsNullOrWhiteSpace(displayName)) continue;
 
-                    // Filter out system components and updates
                     if (appKey.GetValue("SystemComponent") is int sysComp && sysComp == 1) continue;
                     if (appKey.GetValue("ParentKeyName") != null) continue;
                     if (displayName.StartsWith("KB", StringComparison.OrdinalIgnoreCase) && displayName.Length > 2 && char.IsDigit(displayName[2])) continue;
@@ -369,7 +407,7 @@ public class AppLocator
         try
         {
             string clean = Path.GetFullPath(path.Trim().Trim('"', '\'')).TrimEnd('\\', '/');
-            if (clean.Length <= 3) return true; // Drive root e.g. C:
+            if (clean.Length <= 3) return true;
 
             string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\');
             if (clean.Equals(winDir, StringComparison.OrdinalIgnoreCase) ||
@@ -464,10 +502,6 @@ public class AppLocator
         return string.Empty;
     }
 
-    /// <summary>
-    /// Accurately extracts the executable path from a raw command line string, supporting environment variables,
-    /// quoted paths, unquoted paths with spaces, and folders containing ".exe" substrings.
-    /// </summary>
     public static string ExtractExeFromCommand(string command)
     {
         if (string.IsNullOrWhiteSpace(command)) return string.Empty;
@@ -482,7 +516,6 @@ public class AppLocator
             }
         }
 
-        // Iterate over all ".exe" boundary occurrences (preferring the one that actually exists on disk if multiple)
         string? firstCandidate = null;
         foreach (Match match in ExeTokenRegex.Matches(trimmed))
         {
@@ -529,7 +562,6 @@ public class AppLocator
                 if (created.Year >= 2000 && created <= DateTime.Now.AddDays(1))
                 {
                     bool recent = (DateTime.Now - created).TotalDays <= 14;
-                    // Verify against icon/main executable creation time if available to prevent false recent flags
                     if (recent && !string.IsNullOrWhiteSpace(displayIcon))
                     {
                         string iconPath = ExtractExeFromCommand(displayIcon);

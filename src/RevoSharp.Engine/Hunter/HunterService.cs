@@ -8,6 +8,7 @@ using RevoSharp.Core.Models;
 using RevoSharp.Engine.Discovery;
 using RevoSharp.Engine.Execution;
 using RevoSharp.Engine.Safety;
+using RevoSharp.Engine.Scanning;
 
 namespace RevoSharp.Engine.Hunter;
 
@@ -21,6 +22,12 @@ public class HunterService
         "regedit.exe", "mmc.exe", "SearchHost.exe", "ShellExperienceHost.exe",
         "StartMenuExperienceHost.exe", "ApplicationFrameHost.exe", "RuntimeBroker.exe",
         "ctfmon.exe", "dllhost.exe", "conhost.exe", "registry", "system", "idle"
+    };
+
+    private static readonly HashSet<string> GenericBinaryNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "app.exe", "update.exe", "updater.exe", "launcher.exe", "helper.exe",
+        "service.exe", "daemon.exe", "agent.exe", "client.exe", "server.exe", "main.exe"
     };
 
     private static readonly HashSet<string> AutostartTriggerElementNames = new(StringComparer.OrdinalIgnoreCase)
@@ -83,10 +90,6 @@ public class HunterService
     private static extern bool CloseHandle(IntPtr hObject);
     #endregion
 
-    /// <summary>
-    /// Fast lightweight hit-test that returns only the root window handle (HWND) under the cursor
-    /// without performing expensive disk/COM/registry I/O. Used during mouse-move dragging to avoid frame drops.
-    /// </summary>
     public IntPtr GetRootWindowAtPoint(int screenX, int screenY)
     {
         var point = new POINT { X = screenX, Y = screenY };
@@ -204,10 +207,6 @@ public class HunterService
         return info;
     }
 
-    /// <summary>
-    /// Creates a HunterTargetInfo directly from a desktop shortcut (.lnk) or executable file dropped onto the reticle
-    /// (Revo Uninstaller Pro parity: Hunter Mode supports shortcuts and files in addition to windows).
-    /// </summary>
     public HunterTargetInfo? InspectFileOrShortcut(string filePath, List<InstalledApp>? installedApps = null)
     {
         if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return null;
@@ -239,9 +238,17 @@ public class HunterService
         }
         catch { }
 
-        var runningProc = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(resolvedExe)).FirstOrDefault();
-        int pid = runningProc?.Id ?? 0;
-        runningProc?.Dispose();
+        int pid = 0;
+        try
+        {
+            var procs = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(resolvedExe));
+            if (procs.Length > 0)
+            {
+                pid = procs[0].Id;
+                foreach (var p in procs) p.Dispose();
+            }
+        }
+        catch { }
 
         string winFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\') + "\\";
         bool isCritical = SystemCriticalProcesses.Contains(procName) ||
@@ -334,23 +341,21 @@ public class HunterService
             string targetExe = Path.GetFileName(info.ExecutablePath);
             string targetDir = info.DirectoryPath.TrimEnd('\\');
 
-            // 1. Exact or Sub-Directory match
             var matched = installedApps.FirstOrDefault(a =>
                 !string.IsNullOrEmpty(a.InstallLocation) &&
                 !AppLocator.IsProtectedSharedDirectory(a.InstallLocation) &&
                 (targetDir.Equals(a.InstallLocation.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) ||
                  targetDir.StartsWith(a.InstallLocation.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)));
 
-            // 2. DisplayIcon or UninstallString match
             matched ??= installedApps.FirstOrDefault(a =>
-                (!string.IsNullOrEmpty(a.DisplayIcon) && a.DisplayIcon.Contains(targetExe, StringComparison.OrdinalIgnoreCase)) ||
-                (!string.IsNullOrEmpty(a.UninstallString) && a.UninstallString.Contains(targetExe, StringComparison.OrdinalIgnoreCase)));
+                !GenericBinaryNames.Contains(targetExe) &&
+                ((!string.IsNullOrEmpty(a.DisplayIcon) && a.DisplayIcon.Contains(targetExe, StringComparison.OrdinalIgnoreCase)) ||
+                 (!string.IsNullOrEmpty(a.UninstallString) && a.UninstallString.Contains(targetExe, StringComparison.OrdinalIgnoreCase))));
 
-            // 3. Name similarity match
             if (matched == null)
             {
                 string exeNoExt = Path.GetFileNameWithoutExtension(info.ExecutablePath);
-                if (exeNoExt.Length >= 4)
+                if (exeNoExt.Length >= 4 && !GenericBinaryNames.Contains(targetExe))
                 {
                     matched = installedApps.FirstOrDefault(a =>
                         a.DisplayName.Equals(exeNoExt, StringComparison.OrdinalIgnoreCase) ||
@@ -423,14 +428,14 @@ public class HunterService
             ? info.DirectoryPath.TrimEnd('\\') + "\\"
             : null;
 
-        CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
 
         if (Environment.Is64BitOperatingSystem)
         {
-            CheckRegistryRun(Registry.LocalMachine, @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+            CheckRegistryRun(Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
         }
 
         string userStartup = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
@@ -439,14 +444,45 @@ public class HunterService
         string commonStartup = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup);
         CheckStartupFolder(commonStartup, exeName, exeNoExt, exePath, info.AutostartDescriptions);
 
-        // Also check Scheduled Task autoruns matching this target
         CheckScheduledTaskAutorunsForTarget(exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
 
         info.HasAutostartEntry = info.AutostartDescriptions.Count > 0;
     }
 
+    private static bool IsAutostartCommandMatchingTarget(
+        string? commandValue,
+        string exeName,
+        string exePath,
+        string? safeDirPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(commandValue)) return false;
+
+        if (commandValue.Contains(exePath, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!string.IsNullOrEmpty(safeDirPrefix) && commandValue.Contains(safeDirPrefix, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Guard against collateral false positives on generic binary names like update.exe or app.exe!
+        if (GenericBinaryNames.Contains(exeName))
+            return false;
+
+        string extracted = AppLocator.ExtractExeFromCommand(commandValue);
+        if (!string.IsNullOrEmpty(extracted))
+        {
+            // If the command points to an existing executable in a different directory, do NOT match it
+            if (File.Exists(extracted) && !extracted.Equals(exePath, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return Path.GetFileName(extracted).Equals(exeName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
     private static void CheckRegistryRun(
         RegistryKey root,
+        string hiveShort,
         string subKey,
         string exeName,
         string exePath,
@@ -460,12 +496,9 @@ public class HunterService
             foreach (var valName in key.GetValueNames())
             {
                 string? val = key.GetValue(valName)?.ToString();
-                if (!string.IsNullOrEmpty(val) &&
-                    (val.Contains(exePath, StringComparison.OrdinalIgnoreCase) ||
-                     (!string.IsNullOrEmpty(safeDirPrefix) && val.Contains(safeDirPrefix, StringComparison.OrdinalIgnoreCase)) ||
-                     val.Contains(exeName, StringComparison.OrdinalIgnoreCase)))
+                if (IsAutostartCommandMatchingTarget(val, exeName, exePath, safeDirPrefix))
                 {
-                    list.Add($"{root.Name}\\{subKey} -> [{valName}]");
+                    list.Add($"{hiveShort}\\{subKey} -> [{valName}]");
                 }
             }
         }
@@ -480,7 +513,7 @@ public class HunterService
             foreach (var file in Directory.GetFiles(folder))
             {
                 string fnameNoExt = Path.GetFileNameWithoutExtension(file);
-                if ((exeNoExt.Length >= 3 && fnameNoExt.Contains(exeNoExt, StringComparison.OrdinalIgnoreCase)) ||
+                if ((exeNoExt.Length >= 4 && !GenericBinaryNames.Contains(exeName) && fnameNoExt.Equals(exeNoExt, StringComparison.OrdinalIgnoreCase)) ||
                     ShortcutTargetMatches(file, exeName, exePath))
                 {
                     list.Add($"启动文件夹: {file}");
@@ -503,8 +536,8 @@ public class HunterService
             foreach (var task in tasks)
             {
                 if (task.ExecutablePath.Equals(exePath, StringComparison.OrdinalIgnoreCase) ||
-                    Path.GetFileName(task.ExecutablePath).Equals(exeName, StringComparison.OrdinalIgnoreCase) ||
-                    (!string.IsNullOrEmpty(safeDirPrefix) && task.ExecutablePath.StartsWith(safeDirPrefix, StringComparison.OrdinalIgnoreCase)))
+                    (!string.IsNullOrEmpty(safeDirPrefix) && task.ExecutablePath.StartsWith(safeDirPrefix, StringComparison.OrdinalIgnoreCase)) ||
+                    (!GenericBinaryNames.Contains(exeName) && !File.Exists(task.ExecutablePath) && Path.GetFileName(task.ExecutablePath).Equals(exeName, StringComparison.OrdinalIgnoreCase)))
                 {
                     list.Add($"计划任务自启: {task.ScheduledTaskPath}");
                 }
@@ -519,16 +552,14 @@ public class HunterService
         string? target = ResolveShortcutTarget(lnkFile);
         if (!string.IsNullOrEmpty(target))
         {
-            return target.Equals(exePath, StringComparison.OrdinalIgnoreCase) ||
-                   Path.GetFileName(target).Equals(exeName, StringComparison.OrdinalIgnoreCase);
+            if (target.Equals(exePath, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (!GenericBinaryNames.Contains(exeName) && !File.Exists(target) && Path.GetFileName(target).Equals(exeName, StringComparison.OrdinalIgnoreCase))
+                return true;
         }
         return false;
     }
 
-    /// <summary>
-    /// Asynchronously backs up and removes all autostart entries (Registry Run, Startup Folders, and Logon Scheduled Tasks)
-    /// for a Hunter target, saving a complete BackupManifest so the user can restore them from the Backup Manager at any time.
-    /// </summary>
     public async Task<bool> DisableAutostartAsync(HunterTargetInfo info)
     {
         if (string.IsNullOrEmpty(info.ExecutablePath)) return false;
@@ -582,14 +613,13 @@ public class HunterService
             }
         }
 
-        // Also back up and remove matching Scheduled Task autoruns
         var allTaskAutoruns = new List<AutostartEntry>();
         ScanThirdPartyScheduledTaskAutoruns(allTaskAutoruns);
         foreach (var taskEntry in allTaskAutoruns)
         {
             if (taskEntry.ExecutablePath.Equals(exePath, StringComparison.OrdinalIgnoreCase) ||
-                Path.GetFileName(taskEntry.ExecutablePath).Equals(exeName, StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrEmpty(safeDirPrefix) && taskEntry.ExecutablePath.StartsWith(safeDirPrefix, StringComparison.OrdinalIgnoreCase)))
+                (!string.IsNullOrEmpty(safeDirPrefix) && taskEntry.ExecutablePath.StartsWith(safeDirPrefix, StringComparison.OrdinalIgnoreCase)) ||
+                (!GenericBinaryNames.Contains(exeName) && !File.Exists(taskEntry.ExecutablePath) && Path.GetFileName(taskEntry.ExecutablePath).Equals(exeName, StringComparison.OrdinalIgnoreCase)))
             {
                 var (xmlBak, resolvedTn) = await RegistryBackup.BackupAndDeleteScheduledTaskWithNameAsync(
                     taskEntry.FullLocation,
@@ -637,10 +667,7 @@ public class HunterService
             foreach (var valName in key.GetValueNames())
             {
                 string? val = key.GetValue(valName)?.ToString();
-                if (!string.IsNullOrEmpty(val) &&
-                    (val.Contains(exePath, StringComparison.OrdinalIgnoreCase) ||
-                     (!string.IsNullOrEmpty(safeDirPrefix) && val.Contains(safeDirPrefix, StringComparison.OrdinalIgnoreCase)) ||
-                     val.Contains(exeName, StringComparison.OrdinalIgnoreCase)))
+                if (IsAutostartCommandMatchingTarget(val, exeName, exePath, safeDirPrefix))
                 {
                     string fullKey = $@"{hiveShort}\{subKey}";
                     string? bak = await RegistryBackup.ExportValueAsync(fullKey, valName, val, appName, is64View);
@@ -675,7 +702,7 @@ public class HunterService
             foreach (var file in Directory.GetFiles(folder))
             {
                 string fnameNoExt = Path.GetFileNameWithoutExtension(file);
-                if ((exeNoExt.Length >= 3 && fnameNoExt.Contains(exeNoExt, StringComparison.OrdinalIgnoreCase)) ||
+                if ((exeNoExt.Length >= 4 && !GenericBinaryNames.Contains(exeName) && fnameNoExt.Equals(exeNoExt, StringComparison.OrdinalIgnoreCase)) ||
                     ShortcutTargetMatches(file, exeName, exePath))
                 {
                     string? snapshotCopy = FileBackup.TryCreateFileBackupCopy(file, appName);
@@ -722,10 +749,6 @@ public class HunterService
         }
     }
 
-    /// <summary>
-    /// Enumerates all system-wide and current-user autostart entries (Registry Run/RunOnce, Startup Folders, and Logon/Boot Scheduled Tasks),
-    /// including Windows Task Manager StartupApproved enabled/disabled state!
-    /// </summary>
     public List<AutostartEntry> GetAllAutostartEntries()
     {
         var entries = new List<AutostartEntry>();
@@ -746,6 +769,8 @@ public class HunterService
 
         foreach (var (root, hiveName, subKey, approvedSubKey, label, is64View) in regSources)
         {
+            if (!Environment.Is64BitOperatingSystem && !is64View) continue;
+
             try
             {
                 using var key = root.OpenSubKey(subKey);
@@ -836,7 +861,6 @@ public class HunterService
             catch { }
         }
 
-        // 3. Third-party Scheduled Tasks with verified Logon/Boot/Startup triggers
         ScanThirdPartyScheduledTaskAutoruns(entries);
 
         return entries;
@@ -868,14 +892,12 @@ public class HunterService
                     var doc = XDocument.Load(taskFile);
                     XNamespace ns = doc.Root?.Name.Namespace ?? XNamespace.None;
 
-                    // Verify that the task actually has a Logon, Boot, SessionStateChange, or Registration trigger
+                    // Critical fix: Tasks with no <Triggers> or empty <Triggers /> are on-demand tasks and MUST be skipped!
                     var triggersElement = doc.Descendants(ns + "Triggers").FirstOrDefault();
-                    if (triggersElement != null && triggersElement.HasElements)
+                    if (triggersElement == null ||
+                        !triggersElement.Elements().Any(el => AutostartTriggerElementNames.Contains(el.Name.LocalName)))
                     {
-                        bool hasAutostartTrigger = triggersElement.Elements()
-                            .Any(el => AutostartTriggerElementNames.Contains(el.Name.LocalName));
-                        if (!hasAutostartTrigger)
-                            continue;
+                        continue;
                     }
 
                     string? command = doc.Descendants(ns + "Command").FirstOrDefault()?.Value?.Trim().Trim('"');
@@ -928,7 +950,6 @@ public class HunterService
             using var key = root.OpenSubKey(approvedSubKey, false);
             if (key?.GetValue(itemName) is byte[] data && data.Length >= 4)
             {
-                // Windows Task Manager convention: odd first byte (0x03, 0x01) means disabled; 0x02 or 0x06 means enabled
                 return data[0] == 0x02 || data[0] == 0x06 || data[0] == 0x00;
             }
         }
@@ -936,10 +957,6 @@ public class HunterService
         return true;
     }
 
-    /// <summary>
-    /// Toggles an autostart entry between Enabled and Disabled non-destructively using Windows Task Manager's
-    /// StartupApproved registry binary protocol or schtasks /Change, without deleting the entry!
-    /// </summary>
     public async Task<bool> ToggleAutostartEntryStateAsync(AutostartEntry entry)
     {
         bool targetEnable = !entry.IsEnabled;
@@ -1000,11 +1017,11 @@ public class HunterService
                 byte[] payload = new byte[12];
                 if (targetEnable)
                 {
-                    payload[0] = 0x02; // Enabled in Windows StartupApproved
+                    payload[0] = 0x02;
                 }
                 else
                 {
-                    payload[0] = 0x03; // Disabled in Windows StartupApproved
+                    payload[0] = 0x03;
                     long fileTime = DateTime.UtcNow.ToFileTimeUtc();
                     byte[] timeBytes = BitConverter.GetBytes(fileTime);
                     Buffer.BlockCopy(timeBytes, 0, payload, 4, 8);
@@ -1021,9 +1038,6 @@ public class HunterService
         });
     }
 
-    /// <summary>
-    /// Backs up an autostart entry and creates a full BackupManifest so it is immediately visible and 1-click restorable in the Backup Manager.
-    /// </summary>
     public async Task<bool> RemoveAutostartEntryAsync(AutostartEntry entry)
     {
         var manifest = new BackupManifest
@@ -1093,27 +1107,11 @@ public class HunterService
         return removed;
     }
 
+    /// <summary>
+    /// Resolves a .lnk shortcut's target path using the fast native binary ShellLinkParser (zero COM overhead).
+    /// </summary>
     public static string? ResolveShortcutTarget(string lnkPath)
     {
-        dynamic? wshShell = null;
-        dynamic? shortcut = null;
-        try
-        {
-            Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
-            if (shellType == null) return null;
-            wshShell = Activator.CreateInstance(shellType);
-            if (wshShell == null) return null;
-            shortcut = wshShell.CreateShortcut(lnkPath);
-            return shortcut?.TargetPath as string;
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            if (shortcut != null && Marshal.IsComObject(shortcut)) Marshal.FinalReleaseComObject(shortcut);
-            if (wshShell != null && Marshal.IsComObject(wshShell)) Marshal.FinalReleaseComObject(wshShell);
-        }
+        return ShellLinkParser.ResolveTargetPath(lnkPath);
     }
 }

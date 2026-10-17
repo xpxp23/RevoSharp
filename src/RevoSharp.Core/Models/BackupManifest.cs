@@ -1,7 +1,12 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+
 namespace RevoSharp.Core.Models;
 
-public class BackupManifest
+public class BackupManifest : INotifyPropertyChanged
 {
+    private bool _isRestored;
+
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public required string AppName { get; set; }
     public string BackupCategory { get; set; } = "卸载残留清理";
@@ -29,27 +34,63 @@ public class BackupManifest
     public Dictionary<string, string> FileBackupCopyMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Human-readable list of backed-up targets (registry paths, file paths, task names) for inspection in the Backup Manager UI.
+    /// Maps "Machine::Path" or "User::Path" to the full original PATH environment variable value prior to dead-link removal.
+    /// </summary>
+    public Dictionary<string, string> EnvironmentPathBackupMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Human-readable list of backed-up targets (registry paths, file paths, task names, environment paths) for inspection in the Backup Manager UI.
     /// </summary>
     public List<string> BackedUpTargetDescriptions { get; set; } = [];
 
     public bool SystemRestorePointCreated { get; set; }
 
+    public bool IsRestored
+    {
+        get => _isRestored;
+        set
+        {
+            if (_isRestored != value)
+            {
+                _isRestored = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(SummaryText));
+            }
+        }
+    }
+
+    public int TotalFileCount =>
+        RecycledFilePaths
+            .Concat(FileBackupCopyMap.Keys)
+            .Concat(RebootScheduledPaths)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
     public int TotalBackedUpItems =>
         RegBackupFiles.Count +
-        Math.Max(RecycledFilePaths.Count, FileBackupCopyMap.Count) +
-        TaskXmlBackupFiles.Count;
+        TotalFileCount +
+        TaskXmlBackupFiles.Count +
+        EnvironmentPathBackupMap.Count;
 
     public string CreatedTimeDisplay => CreatedTime.ToString("yyyy-MM-dd HH:mm:ss");
 
     public string SummaryText =>
-        $"[{BackupCategory}] 注册表: {RegBackupFiles.Count} 份 | 文件/快捷方式: {Math.Max(RecycledFilePaths.Count, FileBackupCopyMap.Count)} 项" +
+        (IsRestored ? "[已还原] " : string.Empty) +
+        $"[{BackupCategory}] 注册表备份: {RegBackupFiles.Count} 份 | 文件/目录: {TotalFileCount} 项" +
         (TaskXmlBackupFiles.Count > 0 ? $" | 计划任务: {TaskXmlBackupFiles.Count} 项" : "") +
+        (EnvironmentPathBackupMap.Count > 0 ? $" | 环境变量: {EnvironmentPathBackupMap.Count} 项" : "") +
         (RebootScheduledPaths.Count > 0 ? $" | 重启延迟删除: {RebootScheduledPaths.Count} 项" : "") +
         (SystemRestorePointCreated ? " | 已建系统还原点" : "");
 
     public string DetailsTooltipText => BackedUpTargetDescriptions.Count > 0
-        ? string.Join(Environment.NewLine, BackedUpTargetDescriptions.Take(25)) +
-          (BackedUpTargetDescriptions.Count > 25 ? $"{Environment.NewLine}... 共 {BackedUpTargetDescriptions.Count} 项" : "")
+        ? string.Join(Environment.NewLine, BackedUpTargetDescriptions.Take(30)) +
+          (BackedUpTargetDescriptions.Count > 30 ? $"{Environment.NewLine}... 共 {BackedUpTargetDescriptions.Count} 项" : "")
         : SummaryText;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
 }

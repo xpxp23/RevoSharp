@@ -16,6 +16,10 @@ public class RegistryTreeNode : INotifyPropertyChanged
     public ResidualItem? AssociatedItem { get; set; }
 
     public ObservableCollection<RegistryTreeNode> Children { get; set; } = [];
+    public Dictionary<string, RegistryTreeNode> ChildLookup { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool IsContainerOnly => !IsMatched;
+    public double NodeOpacity => IsMatched ? 1.0 : 0.72;
 
     private bool? _isChecked = true;
     public bool? IsChecked
@@ -78,7 +82,8 @@ public class RegistryTreeNode : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Pure read-only projection from ResidualItem.IsSelected onto TreeNode.IsChecked without mutating AssociatedItem.IsSelected.
+    /// Synchronizes TreeNode check state from ResidualItem.IsSelected and automatically protects parent registry keys
+    /// if any child key or value under them was deselected in either Flat or Tree mode.
     /// </summary>
     public void SyncFromItemSelection()
     {
@@ -91,8 +96,13 @@ public class RegistryTreeNode : INotifyPropertyChanged
         {
             bool allChildrenChecked = Children.All(c => c.IsChecked == true);
             bool allChildrenUnchecked = Children.All(c => c.IsChecked == false);
-            bool? selfState = AssociatedItem?.IsSelected;
 
+            if (!allChildrenChecked && AssociatedItem != null && AssociatedItem.IsSelected)
+            {
+                AssociatedItem.IsSelected = false;
+            }
+
+            bool? selfState = AssociatedItem?.IsSelected;
             bool isAllTrue = allChildrenChecked && (selfState ?? true);
             bool isAllFalse = allChildrenUnchecked && !(selfState ?? false);
             bool? computed = isAllTrue ? true : (isAllFalse ? false : null);
@@ -131,10 +141,11 @@ public class RegistryTreeNode : INotifyPropertyChanged
         {
             _isChecked = newState;
             OnPropertyChanged(nameof(IsChecked));
-            if (notifyParent)
-            {
-                Parent?.RecalculateCheckStateFromChildren();
-            }
+        }
+
+        if (notifyParent)
+        {
+            Parent?.RecalculateCheckStateFromChildren();
         }
     }
 
@@ -144,6 +155,9 @@ public class RegistryTreeNode : INotifyPropertyChanged
         ResidualCategory.FirewallRule => "Shield24",
         ResidualCategory.ShellExtension => "Apps24",
         ResidualCategory.MsiMetadata => "Box24",
+        ResidualCategory.EnvironmentPath => "Code24",
+        ResidualCategory.BrowserExtension => "GlobeSearch24",
+        ResidualCategory.DriverPackage => "Wrench24",
         ResidualCategory.RegistryValue => "Tag24",
         _ => "Code24"
     };
@@ -154,6 +168,9 @@ public class RegistryTreeNode : INotifyPropertyChanged
         ResidualCategory.FirewallRule => "🛡️",
         ResidualCategory.ShellExtension => "🧩",
         ResidualCategory.MsiMetadata => "📦",
+        ResidualCategory.EnvironmentPath => "🌐",
+        ResidualCategory.BrowserExtension => "🧭",
+        ResidualCategory.DriverPackage => "🔧",
         ResidualCategory.RegistryValue => "🏷️",
         _ => "🔑"
     };

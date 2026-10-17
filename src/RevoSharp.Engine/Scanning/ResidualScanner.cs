@@ -1,8 +1,10 @@
+using System.IO;
 using Microsoft.Win32;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
 using RevoSharp.Core.Serialization;
 using RevoSharp.Engine.Discovery;
+using RevoSharp.Engine.Safety;
 
 namespace RevoSharp.Engine.Scanning;
 
@@ -21,23 +23,32 @@ public class ResidualScanner
 
     /// <summary>
     /// Sibling edition/variant tokens that indicate a separate side-by-side product installation
-    /// (e.g., "Google Chrome Beta" vs "Google Chrome", or "Visual Studio Code" vs "Visual Studio").
-    /// Prevents accidental high-confidence collateral deletion of sibling products.
+    /// (e.g., "Google Chrome Beta" vs "Google Chrome", "FooPlayer Pro" vs "FooPlayer", "Visual Studio Code" vs "Visual Studio").
+    /// Prevents accidental high/medium-confidence collateral deletion of sibling products!
     /// </summary>
     private static readonly HashSet<string> SiblingVariantTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "beta", "canary", "dev", "nightly", "insiders", "preview", "server", "agent",
-        "sdk", "runtime", "redist", "viewer", "helper", "bridge", "updater", "code", "studio"
+        "sdk", "runtime", "redist", "viewer", "helper", "bridge", "updater", "code", "studio",
+        "pro", "plus", "max", "ultra", "lite", "ultimate", "professional", "enterprise",
+        "community", "standard", "se", "ce", "express", "workstation", "player", "creator"
     };
 
     private readonly ReverseReferenceScanner _refScanner = new();
     private readonly ShortcutScanner _shortcutScanner = new();
 
-    public async Task<List<ResidualItem>> ScanResidualsAsync(InstalledApp app, ScanMode mode = ScanMode.Moderate)
+    public async Task<List<ResidualItem>> ScanResidualsAsync(
+        InstalledApp app,
+        ScanMode mode = ScanMode.Moderate,
+        IEnumerable<InstalledApp>? otherInstalledApps = null)
     {
         return await Task.Run(async () =>
         {
             var results = new List<ResidualItem>();
+
+            // Build set of active installation directories belonging to OTHER currently installed apps
+            // so we never flag a sibling product's active installation folder as a residual!
+            var protectedSiblingDirs = BuildActiveSiblingDirectorySet(app, otherInstalledApps);
 
             // 1. If trace log exists from monitoring, load recorded exact items AND continue scanning runtime residuals
             if (app.HasTraceLog && !string.IsNullOrEmpty(app.TraceLogPath) && File.Exists(app.TraceLogPath))
@@ -60,14 +71,14 @@ public class ResidualScanner
             {
                 _refScanner.ScanReferences(profile, results);
                 _shortcutScanner.ScanShortcuts(profile, results);
-                ScanCommonDirectories(profile, results, deepFuzzy: false);
+                ScanCommonDirectories(profile, results, protectedSiblingDirs, deepFuzzy: false);
                 ScanSoftwareHives(profile, results, deepFuzzy: false);
             }
 
             // 5. Level 3: Advanced Mode checks (Deep fuzzy token scan + Temp directory)
             if (mode >= ScanMode.Advanced)
             {
-                ScanCommonDirectories(profile, results, deepFuzzy: true);
+                ScanCommonDirectories(profile, results, protectedSiblingDirs, deepFuzzy: true);
                 ScanSoftwareHives(profile, results, deepFuzzy: true);
                 ScanTempDirectory(profile, results);
             }
@@ -80,8 +91,71 @@ public class ResidualScanner
                 }
             }
 
+            // Automatically run a lightweight Restart Manager file-lock check on discovered residual files/folders
+            await FileLockUnlocker.ScanAndAttachLocksToResidualsAsync(results);
+
             return results;
         });
+    }
+
+    private static HashSet<string> BuildActiveSiblingDirectorySet(InstalledApp targetApp, IEnumerable<InstalledApp>? otherInstalledApps)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string targetLoc = targetApp.InstallLocation.Trim().TrimEnd('\\', '/');
+
+        if (otherInstalledApps != null)
+        {
+            foreach (var other in otherInstalledApps)
+            {
+                if (other.Id.Equals(targetApp.Id, StringComparison.OrdinalIgnoreCase)) continue;
+                string loc = other.InstallLocation.Trim().TrimEnd('\\', '/');
+                if (!string.IsNullOrEmpty(loc) && !loc.Equals(targetLoc, StringComparison.OrdinalIgnoreCase))
+                {
+                    set.Add(loc);
+                }
+            }
+            return set;
+        }
+
+        // If caller didn't pass the cached app list, quickly scan Uninstall registry InstallLocations
+        var roots = new (RegistryHive Hive, RegistryView View, string SubPath)[]
+        {
+            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (RegistryHive.CurrentUser, RegistryView.Default, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+        };
+
+        foreach (var (hive, view, subPath) in roots)
+        {
+            if (!Environment.Is64BitOperatingSystem && view == RegistryView.Registry32) continue;
+            try
+            {
+                using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                using var uKey = baseKey.OpenSubKey(subPath);
+                if (uKey == null) continue;
+
+                foreach (var subName in uKey.GetSubKeyNames())
+                {
+                    if (!string.IsNullOrEmpty(targetApp.UninstallKeyName) &&
+                        subName.Equals(targetApp.UninstallKeyName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    using var appKey = uKey.OpenSubKey(subName);
+                    string? rawLoc = appKey?.GetValue("InstallLocation") as string;
+                    if (!string.IsNullOrWhiteSpace(rawLoc))
+                    {
+                        string norm = rawLoc.Trim().Trim('"').TrimEnd('\\', '/');
+                        if (!string.IsNullOrEmpty(norm) && !norm.Equals(targetLoc, StringComparison.OrdinalIgnoreCase))
+                        {
+                            set.Add(norm);
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        return set;
     }
 
     private static void AppendTraceLogResiduals(TraceLog traceLog, List<ResidualItem> results)
@@ -124,7 +198,7 @@ public class ResidualScanner
             {
                 Type = ResidualType.RegistryKey,
                 Category = ResidualCategory.RegistryKey,
-                Path = key,
+                Path = RegistryBackup.NormalizeHivePrefix(key),
                 Confidence = ConfidenceLevel.High,
                 Reason = "ETW 安装监控精确捕获注册表项",
                 IsSelected = true
@@ -136,7 +210,7 @@ public class ResidualScanner
             int sep = rawValToken.IndexOf("||", StringComparison.Ordinal);
             if (sep <= 0) continue;
 
-            string keyPath = rawValToken.Substring(0, sep);
+            string keyPath = RegistryBackup.NormalizeHivePrefix(rawValToken.Substring(0, sep));
             string valName = rawValToken.Substring(sep + 2);
 
             AddResidualIfUnique(results, new ResidualItem
@@ -154,7 +228,6 @@ public class ResidualScanner
 
     private static void ScanSafeItems(TargetProfile profile, List<ResidualItem> results)
     {
-        // 1. Primary Install Directory (strictly verified not to be a shared folder)
         if (profile.HasValidLocation &&
             !AppLocator.IsProtectedSharedDirectory(profile.InstallLocation) &&
             Directory.Exists(profile.InstallLocation))
@@ -184,7 +257,6 @@ public class ResidualScanner
             });
         }
 
-        // 2. Uninstall registry key if it wasn't cleaned up by the native uninstaller
         if (!string.IsNullOrEmpty(profile.UninstallKeyName))
         {
             var uninstallHives = new (RegistryHive Hive, RegistryView View, string SubPath, string FullDisplayPath, bool Is64View)[]
@@ -205,6 +277,8 @@ public class ResidualScanner
 
             foreach (var (hive, view, subPath, fullDisplayPath, is64View) in uninstallHives)
             {
+                if (!Environment.Is64BitOperatingSystem && !is64View) continue;
+
                 try
                 {
                     using var baseKey = RegistryKey.OpenBaseKey(hive, view);
@@ -228,29 +302,43 @@ public class ResidualScanner
         }
     }
 
-    private static void ScanCommonDirectories(TargetProfile profile, List<ResidualItem> results, bool deepFuzzy)
+    private static void ScanCommonDirectories(
+        TargetProfile profile,
+        List<ResidualItem> results,
+        HashSet<string> protectedSiblingDirs,
+        bool deepFuzzy)
     {
-        var targetSearchRoots = new List<string>
+        string progFiles64 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        string progFiles86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+        var targetSearchRoots = new List<(string RootPath, bool IsProgramFilesRoot)>
         {
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)
+            (Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), false),
+            (Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), false),
+            (Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), false),
+            (progFiles64, true),
+            (progFiles86, true)
         };
 
         string localLow = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @"AppData\LocalLow");
-        if (Directory.Exists(localLow)) targetSearchRoots.Add(localLow);
+        if (Directory.Exists(localLow)) targetSearchRoots.Add((localLow, false));
 
-        foreach (var root in targetSearchRoots.Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var (root, isProgFiles) in targetSearchRoots
+                     .Where(r => !string.IsNullOrEmpty(r.RootPath))
+                     .DistinctBy(r => r.RootPath, StringComparer.OrdinalIgnoreCase))
         {
-            if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
+            if (!Directory.Exists(root)) continue;
 
             try
             {
                 foreach (var dir in Directory.GetDirectories(root))
                 {
+                    string normDir = dir.TrimEnd('\\', '/');
+                    if (protectedSiblingDirs.Contains(normDir))
+                        continue;
+
                     string dirName = Path.GetFileName(dir);
+                    string categoryLabel = isProgFiles ? "程序安装残留目录" : "应用数据与缓存目录";
 
                     bool isPublisherRoot = BlacklistedNames.Contains(dirName) ||
                         (!string.IsNullOrEmpty(profile.Publisher) &&
@@ -265,6 +353,9 @@ public class ResidualScanner
                             {
                                 foreach (var subDir in Directory.GetDirectories(dir))
                                 {
+                                    if (protectedSiblingDirs.Contains(subDir.TrimEnd('\\', '/')))
+                                        continue;
+
                                     string subName = Path.GetFileName(subDir);
                                     if (BlacklistedNames.Contains(subName)) continue;
 
@@ -297,7 +388,7 @@ public class ResidualScanner
                             Path = dir,
                             SizeInBytes = CalculatePathSize(dir, isDirectory: true),
                             Confidence = confidence,
-                            Reason = $"应用数据与缓存目录 ({matchReason})",
+                            Reason = $"{categoryLabel} ({matchReason})",
                             IsSelected = confidence == ConfidenceLevel.High || confidence == ConfidenceLevel.Medium
                         });
                     }
@@ -318,6 +409,8 @@ public class ResidualScanner
 
         foreach (var (hive, view, subPath, hivePrefix, is64View) in hives)
         {
+            if (!Environment.Is64BitOperatingSystem && !is64View) continue;
+
             try
             {
                 using var baseKey = RegistryKey.OpenBaseKey(hive, view);
@@ -453,7 +546,6 @@ public class ResidualScanner
             return true;
         }
 
-        // Deep fuzzy token scan (only in Advanced mode)
         if (deepFuzzy && profile.CleanTokens.Count > 0)
         {
             string cleanCand = CleanName(candidate);
@@ -503,7 +595,6 @@ public class ResidualScanner
         if (GetEffectiveLength(compactCand) >= 5 && compactCand.Equals(compactTarget, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        // Check if candidate starts with target + space (e.g., "Google Chrome Beta" vs "Google Chrome")
         if (cleanCandidate.StartsWith(cleanTarget + " ", StringComparison.OrdinalIgnoreCase))
         {
             string suffix = cleanCandidate.Substring(cleanTarget.Length).Trim();
@@ -569,9 +660,19 @@ public class ResidualScanner
 
     public static void AddResidualIfUnique(List<ResidualItem> results, ResidualItem item)
     {
+        string normItemPath = item.Type is ResidualType.RegistryKey or ResidualType.RegistryValue
+            ? RegistryBackup.NormalizeHivePrefix(item.Path)
+            : item.Path.Trim().TrimEnd('\\', '/');
+
         bool exists = results.Any(r =>
-            r.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(r.ValueName ?? string.Empty, item.ValueName ?? string.Empty, StringComparison.OrdinalIgnoreCase));
+        {
+            string normExisting = r.Type is ResidualType.RegistryKey or ResidualType.RegistryValue
+                ? RegistryBackup.NormalizeHivePrefix(r.Path)
+                : r.Path.Trim().TrimEnd('\\', '/');
+
+            return normExisting.Equals(normItemPath, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(r.ValueName ?? string.Empty, item.ValueName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        });
 
         if (!exists)
         {
@@ -579,6 +680,10 @@ public class ResidualScanner
         }
     }
 
+    /// <summary>
+    /// Fast directory size calculation using DirectoryInfo.EnumerateFiles directly so FileInfo.Length
+    /// is read straight from the WIN32_FIND_DATA enumeration buffer with zero extra GetFileAttributesEx syscalls.
+    /// </summary>
     public static long CalculatePathSize(string path, bool isDirectory)
     {
         try
@@ -588,11 +693,12 @@ public class ResidualScanner
                 return File.Exists(path) ? new FileInfo(path).Length : 0;
             }
 
-            if (!Directory.Exists(path)) return 0;
+            var dirInfo = new DirectoryInfo(path);
+            if (!dirInfo.Exists) return 0;
 
             long total = 0;
             int fileCount = 0;
-            foreach (var file in Directory.EnumerateFiles(path, "*", new EnumerationOptions
+            foreach (var fi in dirInfo.EnumerateFiles("*", new EnumerationOptions
             {
                 IgnoreInaccessible = true,
                 RecurseSubdirectories = true,
@@ -601,7 +707,7 @@ public class ResidualScanner
             {
                 try
                 {
-                    total += new FileInfo(file).Length;
+                    total += fi.Length;
                     if (++fileCount > 2500) break;
                 }
                 catch { }

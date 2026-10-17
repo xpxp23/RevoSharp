@@ -27,6 +27,7 @@ public partial class HunterTargetWindow : Window
     private bool _isRightButtonDown;
     private bool _isRightDragging;
     private bool _isClickThroughApplied;
+    private bool _isHandingOffToReview;
     private Point _dragStartPoint;
     private double _parkedLeft;
     private double _parkedTop;
@@ -89,6 +90,26 @@ public partial class HunterTargetWindow : Window
             SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
             Focus();
         };
+
+        // Critical lifecycle fix: If HunterTargetWindow is closed via Alt+F4 or OS close event,
+        // always clean up _overlay / _currentHud and restore _mainWindow so no zombie background process remains!
+        Closed += (s, e) =>
+        {
+            SetClickThrough(false);
+            try { _overlay.Close(); } catch { }
+            try { _currentHud?.Close(); } catch { }
+
+            if (!_isHandingOffToReview && _mainWindow != null && !_mainWindow.IsVisible)
+            {
+                try
+                {
+                    _mainWindow.Show();
+                    _mainWindow.WindowState = WindowState.Normal;
+                    _mainWindow.Activate();
+                }
+                catch { }
+            }
+        };
     }
 
     private Point ScreenPhysicalToLogical(int physicalX, int physicalY)
@@ -150,7 +171,6 @@ public partial class HunterTargetWindow : Window
     {
         base.OnPreviewMouseLeftButtonDown(e);
 
-        // Allow Shift + Left Drag to simply reposition the reticle without aiming
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
         {
             DragMove();
@@ -186,7 +206,6 @@ public partial class HunterTargetWindow : Window
     {
         base.OnPreviewMouseMove(e);
 
-        // 1. Handle Right-Button Drag to reposition reticle smoothly
         if (_isRightButtonDown && e.RightButton == MouseButtonState.Pressed)
         {
             GetCursorPos(out POINT rPt);
@@ -206,7 +225,6 @@ public partial class HunterTargetWindow : Window
             return;
         }
 
-        // 2. Handle Left-Button Aiming Drag with HWND Caching (120+ FPS zero-lag aiming)
         if (!_isAiming) return;
 
         GetCursorPos(out POINT pt);
@@ -278,17 +296,12 @@ public partial class HunterTargetWindow : Window
         Cursor = Cursors.Hand;
         _overlay.Hide();
 
-        // Return reticle to its parked corner so it never obstructs the target window or HUD!
         Left = _parkedLeft;
         Top = _parkedTop;
 
         if (_currentTarget != null)
         {
-            if (!_currentTarget.IsSystemCritical)
-            {
-                _hunterService.ScanAutostartPersistence(_currentTarget);
-            }
-
+            // Open HUD immediately on mouse release! HunterActionHudViewModel scans autostart persistence asynchronously in the background.
             GetCursorPos(out POINT pt);
             ShowActionHud(_currentTarget, new Point(pt.X, pt.Y));
         }
@@ -302,14 +315,9 @@ public partial class HunterTargetWindow : Window
 
     private void OnReticleDragOver(object sender, DragEventArgs e)
     {
-        if (e.Data.GetDataPresent(DataFormats.FileDrop))
-        {
-            e.Effects = DragDropEffects.Link;
-        }
-        else
-        {
-            e.Effects = DragDropEffects.None;
-        }
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+            ? DragDropEffects.Link
+            : DragDropEffects.None;
         e.Handled = true;
     }
 
@@ -318,7 +326,7 @@ public partial class HunterTargetWindow : Window
         if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
         if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
         {
-            InspectFileAndOpenHud(files[0]);
+            _ = InspectFileAndOpenHudAsync(files[0]);
         }
     }
 
@@ -333,17 +341,18 @@ public partial class HunterTargetWindow : Window
 
         if (dlg.ShowDialog() == true && File.Exists(dlg.FileName))
         {
-            InspectFileAndOpenHud(dlg.FileName);
+            _ = InspectFileAndOpenHudAsync(dlg.FileName);
         }
     }
 
-    private void InspectFileAndOpenHud(string filePath)
+    private async Task InspectFileAndOpenHudAsync(string filePath)
     {
-        var info = _hunterService.InspectFileOrShortcut(filePath, _installedApps);
+        GetCursorPos(out POINT pt);
+        var screenPt = new Point(pt.X, pt.Y);
+        var info = await Task.Run(() => _hunterService.InspectFileOrShortcut(filePath, _installedApps));
         if (info != null)
         {
-            GetCursorPos(out POINT pt);
-            ShowActionHud(info, new Point(pt.X, pt.Y));
+            ShowActionHud(info, screenPt);
         }
     }
 
@@ -355,11 +364,13 @@ public partial class HunterTargetWindow : Window
             target,
             _hunterService,
             _residualScanner,
-            _uninstallerRunner);
+            _uninstallerRunner,
+            _installedApps);
 
         vm.RequestRestoreMainWindowAction = RestoreMainWindow;
         vm.RequestOpenReviewAction = (app, residuals) =>
         {
+            _isHandingOffToReview = true;
             _currentHud?.Close();
             CloseHunterMode();
             _openReviewCallback(app, residuals);
@@ -373,17 +384,20 @@ public partial class HunterTargetWindow : Window
     public void RestoreMainWindow()
     {
         CloseHunterMode();
-        _mainWindow.Show();
-        _mainWindow.WindowState = WindowState.Normal;
-        _mainWindow.Activate();
+        if (_mainWindow != null)
+        {
+            _mainWindow.Show();
+            _mainWindow.WindowState = WindowState.Normal;
+            _mainWindow.Activate();
+        }
     }
 
     public void CloseHunterMode()
     {
         SetClickThrough(false);
-        _overlay.Close();
-        _currentHud?.Close();
-        Close();
+        try { _overlay.Close(); } catch { }
+        try { _currentHud?.Close(); } catch { }
+        try { Close(); } catch { }
     }
 
     private void OnRestoreMainClick(object sender, RoutedEventArgs e) => RestoreMainWindow();

@@ -41,13 +41,13 @@
                         Grid.Column="0"
                         Width="40" Height="40"
                         CornerRadius="20"
-                        Background="#280078D4"
+                        Background="{DynamicResource RevoTagBlueBgBrush}"
                         VerticalAlignment="Top"
                         Margin="0,0,14,0">
                     <ui:SymbolIcon x:Name="PromptSymbolIcon"
                                    Symbol="QuestionCircle24"
                                    FontSize="22"
-                                   Foreground="#60CDFF"
+                                   Foreground="{DynamicResource RevoAccentCyanBrush}"
                                    HorizontalAlignment="Center"
                                    VerticalAlignment="Center" />
                 </Border>

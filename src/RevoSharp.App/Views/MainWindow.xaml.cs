@@ -17,6 +17,15 @@ public partial class MainWindow
     public MainWindow()
     {
         InitializeComponent();
+        Closed += (_, _) =>
+        {
+            try
+            {
+                _hunterTargetWindow?.CloseHunterMode();
+            }
+            catch { }
+            Application.Current?.Shutdown();
+        };
     }
 
     private void OnAppCategoryFilterChecked(object sender, RoutedEventArgs e)
@@ -24,6 +33,24 @@ public partial class MainWindow
         if (sender is RadioButton rb && rb.Tag is string cat && ViewModel != null)
         {
             ViewModel.SelectedCategoryFilter = cat;
+        }
+    }
+
+    private void OnAppsDataGridSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ViewModel == null || AppsDataGrid == null) return;
+        var selected = AppsDataGrid.SelectedItems.Cast<InstalledApp>().ToList();
+        ViewModel.UpdateMultiSelection(selected);
+    }
+
+    private void OnClearMultiSelectionClick(object sender, RoutedEventArgs e)
+    {
+        if (AppsDataGrid == null || ViewModel == null) return;
+        var primary = ViewModel.SelectedApp;
+        AppsDataGrid.SelectedItems.Clear();
+        if (primary != null)
+        {
+            AppsDataGrid.SelectedItem = primary;
         }
     }
 
@@ -41,7 +68,6 @@ public partial class MainWindow
     {
         Hide();
         var hunterService = new HunterService();
-        // Always pass the full unfiltered list (AllApps) so active search filters never blind Hunter Mode matching
         var installedApps = ViewModel.AllApps.ToList();
 
         _hunterTargetWindow = new HunterTargetWindow(
@@ -64,7 +90,7 @@ public partial class MainWindow
         WindowState = WindowState.Normal;
         Activate();
 
-        var window = new ResidualReviewWindow(app, residuals)
+        var window = new ResidualReviewWindow(app, residuals, otherInstalledApps: ViewModel.AllApps)
         {
             Owner = this
         };
@@ -73,11 +99,6 @@ public partial class MainWindow
         _ = ViewModel.LoadAppsAsync();
     }
 
-    /// <summary>
-    /// Safe row double-click handler: Only responds when an actual DataGridRow is double-clicked
-    /// (ignoring column header resize or scrollbar clicks), and opens the app's install location
-    /// instead of accidentally triggering a destructive uninstall.
-    /// </summary>
     private void OnDataGridDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (e.OriginalSource is not DependencyObject source) return;
@@ -122,7 +143,7 @@ public partial class MainWindow
         if (targets.Count == 0) return;
 
         string titlePrompt = targets.Count == 1
-            ? $"将尝试以静默参数极速卸载【{targets[0].DisplayName}】（MSI 自动切换 /X /qn）。\n\n是否继续？"
+            ? $"将尝试以静默参数极速卸载【{targets[0].DisplayName}】（自动适配 MSI / Inno / NSIS / Burn 静默参数）。\n\n是否继续？"
             : $"已选中 {targets.Count} 款程序，将以静默队列模式依次快速卸载，并在队列完成后集中审查清理所有残留。\n\n是否继续？";
 
         bool confirmed = FluentMessageDialog.ShowConfirm(
@@ -142,6 +163,7 @@ public partial class MainWindow
     {
         bool isMultiQueue = queue.Count > 1;
         var aggregatedBatchResiduals = new List<ResidualItem>();
+        var remainingInstalled = ViewModel.AllApps.Where(a => !queue.Any(q => q.Id == a.Id)).ToList();
 
         if (isMultiQueue)
         {
@@ -149,7 +171,7 @@ public partial class MainWindow
             bool rpCreated = await RegistryBackup.CreateSystemRestorePointAsync($"RevoSharp Batch Uninstall ({queue.Count} apps)");
             if (!rpCreated)
             {
-                ViewModel.StatusText = "系统还原点未创建（系统保护可能未开启或处于 24 小时冷却期），将继续执行常规注册表与回收站备份保护...";
+                ViewModel.StatusText = "系统还原点未创建（系统保护可能未开启或处于 24 小时冷却期），将继续执行合并注册表与回收站备份保护...";
             }
         }
 
@@ -177,7 +199,6 @@ public partial class MainWindow
             if (!waitingDialog.ShouldProceedToScan)
                 continue;
 
-            // Check if the app's registry Uninstall key is still present (e.g. user clicked Cancel in native wizard)
             if (!waitingDialog.ForcedByUser && UninstallerRunner.IsAppRegistryEntryStillPresent(app))
             {
                 bool confirmStillInstalled = FluentMessageDialog.ShowConfirm(
@@ -197,7 +218,7 @@ public partial class MainWindow
             if (isMultiQueue)
             {
                 ViewModel.StatusText = $"正在后台扫描【{app.DisplayName}】({index + 1}/{queue.Count}) 的残留项...";
-                var appResiduals = await ViewModel.ResidualScanner.ScanResidualsAsync(app);
+                var appResiduals = await ViewModel.ResidualScanner.ScanResidualsAsync(app, otherInstalledApps: remainingInstalled);
                 foreach (var item in appResiduals)
                 {
                     item.SourceAppName = app.DisplayName;
@@ -206,7 +227,7 @@ public partial class MainWindow
             }
             else
             {
-                var reviewWindow = new ResidualReviewWindow(app)
+                var reviewWindow = new ResidualReviewWindow(app, otherInstalledApps: ViewModel.AllApps)
                 {
                     Owner = this
                 };
@@ -221,7 +242,7 @@ public partial class MainWindow
                 Id = "Batch_Combined",
                 DisplayName = $"批量卸载汇总 ({queue.Count} 款程序)"
             };
-            var batchReviewWindow = new ResidualReviewWindow(combinedApp, aggregatedBatchResiduals)
+            var batchReviewWindow = new ResidualReviewWindow(combinedApp, aggregatedBatchResiduals, otherInstalledApps: remainingInstalled)
             {
                 Owner = this
             };
@@ -234,7 +255,7 @@ public partial class MainWindow
     private void OnDirectScanResidualsClick(object sender, RoutedEventArgs e)
     {
         if (ViewModel.SelectedApp == null) return;
-        var window = new ResidualReviewWindow(ViewModel.SelectedApp)
+        var window = new ResidualReviewWindow(ViewModel.SelectedApp, otherInstalledApps: ViewModel.AllApps)
         {
             Owner = this
         };
@@ -254,7 +275,8 @@ public partial class MainWindow
             var reviewWindow = new ResidualReviewWindow(
                 forcedDialog.ConstructedApp,
                 initialResiduals: null,
-                initialScanMode: forcedDialog.SelectedScanMode)
+                initialScanMode: forcedDialog.SelectedScanMode,
+                otherInstalledApps: ViewModel.AllApps)
             {
                 Owner = this
             };
@@ -272,7 +294,7 @@ public partial class MainWindow
 
         if (toolkit.ShowDialog() == true && toolkit.AppToCleanFromLog != null)
         {
-            var reviewWindow = new ResidualReviewWindow(toolkit.AppToCleanFromLog)
+            var reviewWindow = new ResidualReviewWindow(toolkit.AppToCleanFromLog, otherInstalledApps: ViewModel.AllApps)
             {
                 Owner = this
             };

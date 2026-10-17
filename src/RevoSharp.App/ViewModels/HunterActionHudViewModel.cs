@@ -19,6 +19,7 @@ public partial class HunterActionHudViewModel : ObservableObject
     private readonly HunterService _hunterService;
     private readonly ResidualScanner _residualScanner;
     private readonly UninstallerRunner _uninstallerRunner;
+    private readonly IReadOnlyList<InstalledApp>? _installedApps;
 
     [ObservableProperty]
     private HunterTargetInfo _targetInfo;
@@ -32,6 +33,12 @@ public partial class HunterActionHudViewModel : ObservableObject
     [ObservableProperty]
     private bool _isBusy;
 
+    [ObservableProperty]
+    private bool _hasAutostartEntry;
+
+    [ObservableProperty]
+    private int _autostartCount;
+
     public Action? RequestCloseAction { get; set; }
     public Action<InstalledApp, List<ResidualItem>>? RequestOpenReviewAction { get; set; }
     public Action? RequestRestoreMainWindowAction { get; set; }
@@ -43,34 +50,62 @@ public partial class HunterActionHudViewModel : ObservableObject
 
     public bool CanKillProcess => !TargetInfo.IsSystemCritical && TargetInfo.ProcessId > 4;
 
-    public bool CanDisableAutostart => TargetInfo.HasAutostartEntry && !TargetInfo.IsSystemCritical;
+    public bool CanDisableAutostart => HasAutostartEntry && !TargetInfo.IsSystemCritical;
 
     public HunterActionHudViewModel(
         HunterTargetInfo targetInfo,
         HunterService hunterService,
         ResidualScanner residualScanner,
-        UninstallerRunner uninstallerRunner)
+        UninstallerRunner uninstallerRunner,
+        IReadOnlyList<InstalledApp>? installedApps = null)
     {
         _targetInfo = targetInfo;
         _hunterService = hunterService;
         _residualScanner = residualScanner;
         _uninstallerRunner = uninstallerRunner;
+        _installedApps = installedApps;
+
+        HasAutostartEntry = targetInfo.HasAutostartEntry;
+        AutostartCount = targetInfo.AutostartDescriptions.Count;
 
         LoadIcon();
+        UpdateStatusSummary();
 
-        if (targetInfo.IsSystemCritical)
+        // Run deep autostart persistence scan asynchronously in the background if not yet scanned,
+        // so mouse-up HUD popup is 100% instantaneous with zero UI thread lag!
+        if (!targetInfo.IsSystemCritical && !targetInfo.HasAutostartEntry)
         {
-            StatusMessage = targetInfo.SystemProtectionReason;
+            _ = ScanAutostartInBackgroundAsync();
         }
-        else if (targetInfo.HasAutostartEntry)
+    }
+
+    private async Task ScanAutostartInBackgroundAsync()
+    {
+        await Task.Run(() => _hunterService.ScanAutostartPersistence(TargetInfo));
+        Application.Current?.Dispatcher.InvokeAsync(() =>
         {
-            StatusMessage = $"已检测到 {targetInfo.AutostartDescriptions.Count} 处系统自启动驻留项（含注册表/启动目录/计划任务）";
+            HasAutostartEntry = TargetInfo.HasAutostartEntry;
+            AutostartCount = TargetInfo.AutostartDescriptions.Count;
+            OnPropertyChanged(nameof(CanDisableAutostart));
+            UpdateStatusSummary();
+        });
+    }
+
+    private void UpdateStatusSummary()
+    {
+        if (TargetInfo.IsSystemCritical)
+        {
+            StatusMessage = TargetInfo.SystemProtectionReason;
+        }
+        else if (TargetInfo.HasAutostartEntry)
+        {
+            StatusMessage = $"已检测到 {TargetInfo.AutostartDescriptions.Count} 处系统自启动驻留项（含注册表/启动目录/计划任务）";
         }
         else
         {
-            StatusMessage = targetInfo.IsRegisteredApp
+            StatusMessage = TargetInfo.IsRegisteredApp
                 ? "已精准匹配系统已安装软件档案"
-                : (targetInfo.EffectiveApp.IsProtectedSingleFile
+                : (TargetInfo.EffectiveApp.IsProtectedSingleFile
                     ? "独立单文件程序（已启用所在共享文件夹保护）"
                     : "未在注册表安装列表登记（已生成便携程序专属猎犬档案）");
         }
@@ -131,7 +166,7 @@ public partial class HunterActionHudViewModel : ObservableObject
                 cts.Token);
 
             StatusMessage = "原厂卸载已结束，正在进行深度逆向残留扫描...";
-            var residuals = await _residualScanner.ScanResidualsAsync(app);
+            var residuals = await _residualScanner.ScanResidualsAsync(app, otherInstalledApps: _installedApps);
 
             RequestCloseAction?.Invoke();
             RequestOpenReviewAction?.Invoke(app, residuals);
@@ -161,8 +196,8 @@ public partial class HunterActionHudViewModel : ObservableObject
             }
 
             var app = TargetInfo.EffectiveApp;
-            StatusMessage = "正在逆向索引 CLSID、服务、计划任务与目录残留...";
-            var residuals = await _residualScanner.ScanResidualsAsync(app);
+            StatusMessage = "正在逆向索引 CLSID、服务、驱动、计划任务与目录残留...";
+            var residuals = await _residualScanner.ScanResidualsAsync(app, otherInstalledApps: _installedApps);
 
             RequestCloseAction?.Invoke();
             RequestOpenReviewAction?.Invoke(app, residuals);
@@ -216,10 +251,13 @@ public partial class HunterActionHudViewModel : ObservableObject
             }
             bool removed = await _hunterService.DisableAutostartAsync(TargetInfo);
 
+            HasAutostartEntry = TargetInfo.HasAutostartEntry;
+            AutostartCount = TargetInfo.AutostartDescriptions.Count;
+            OnPropertyChanged(nameof(CanDisableAutostart));
+
             StatusMessage = removed
                 ? (killed ? "已终止目标进程并安全备份清除所有自启动项（可在备份中心一键还原）" : "已安全备份并清除所有开机自启动项（可在备份中心一键还原）")
                 : "未发现或无法移除自启项";
-            OnPropertyChanged(nameof(CanDisableAutostart));
         }
         finally
         {

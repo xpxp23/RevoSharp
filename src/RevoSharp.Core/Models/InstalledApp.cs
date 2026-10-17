@@ -9,6 +9,7 @@ public class InstalledApp : INotifyPropertyChanged
     private bool _hasTraceLog;
     private string? _traceLogPath;
     private bool _isSizeCalculating;
+    private object? _cachedIcon;
 
     public required string Id { get; init; }
     public required string DisplayName { get; init; }
@@ -26,6 +27,22 @@ public class InstalledApp : INotifyPropertyChanged
     public bool IsWindowsApp { get; init; }
     public bool IsProtectedSingleFile { get; init; }
     public bool IsRecentlyInstalled { get; init; }
+
+    /// <summary>
+    /// Asynchronously populated frozen ImageSource so DataGrid scrolling never blocks the UI thread on disk/PE icon extraction.
+    /// </summary>
+    public object? CachedIcon
+    {
+        get => _cachedIcon;
+        set
+        {
+            if (!ReferenceEquals(_cachedIcon, value))
+            {
+                _cachedIcon = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
     public long EstimatedSizeInBytes
     {

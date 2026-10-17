@@ -1,3 +1,5 @@
+using System.IO;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
@@ -8,6 +10,19 @@ namespace RevoSharp.Engine.Scanning;
 
 public class ReverseReferenceScanner
 {
+    private readonly record struct ClsidSnapshotEntry(
+        string Clsid,
+        string FullKeyPath,
+        string ServerSubKey,
+        string ServerPath,
+        bool Is64View);
+
+    private static List<ClsidSnapshotEntry>? _cachedClsidSnapshot;
+    private static DateTime _clsidSnapshotTimeUtc = DateTime.MinValue;
+    private static readonly object ClsidCacheLock = new();
+
+    private static readonly Regex OemInfRegex = new(@"oem\d+\.inf", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public void ScanReferences(TargetProfile profile, List<ResidualItem> results)
     {
         if (!profile.HasValidLocation && profile.MainExeNames.Count == 0 && string.IsNullOrEmpty(profile.GuidString))
@@ -21,11 +36,11 @@ public class ReverseReferenceScanner
             matchedClsids.Add(profile.GuidString);
         }
 
-        // 1. Scan COM Classes (CLSID & TypeLib) and collect matched CLSIDs for downstream ShellExtension lookup
+        // 1. Scan COM Classes (CLSID & TypeLib) using short-lived snapshot cache so batch queues run instantaneously
         ScanClsidHives(profile, matchedClsids, results);
 
-        // 2. Scan Windows Services
-        ScanServices(profile, results);
+        // 2. Scan Windows Services & Kernel/FileSystem Driver Packages (.sys / DriverStore / oem*.inf)
+        ScanServicesAndDrivers(profile, results);
 
         // 3. Scan App Paths across both 64-bit and 32-bit views
         ScanAppPaths(profile, results);
@@ -39,73 +54,108 @@ public class ReverseReferenceScanner
         // 6. Scan Windows Scheduled Tasks (with TaskSchedulerName for clean schtasks unregistration)
         ScanScheduledTasks(profile, results);
 
-        // 7. Scan MSI Installer Metadata & Folders
-        ScanMsiMetadata(profile, results);
+        // 7. Scan MSI Installer Database (msi.dll APIs, packed GUID components, and Installer\Folders)
+        MsiDatabaseScanner.ScanMsiComponentsAndMetadata(profile, results);
 
         // 8. Scan Explorer Shell Extensions & ContextMenuHandlers using collected CLSIDs
         ScanShellExtensions(profile, matchedClsids, results);
+
+        // 9. Scan System & User PATH Environment Variables for orphaned directory dead-links
+        ScanEnvironmentPaths(profile, results);
+
+        // 10. Scan Browser Extensions, NativeMessagingHosts, and Enterprise Policies (Chrome / Edge / Brave / Firefox)
+        ScanBrowserExtensionsAndPolicies(profile, matchedClsids, results);
     }
 
     private static void ScanClsidHives(TargetProfile profile, HashSet<string> matchedClsids, List<ResidualItem> results)
     {
-        var clsidRoots = new (RegistryHive Hive, RegistryView View, string SubPath, string DisplayRoot, bool Is64View)[]
-        {
-            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Classes\CLSID", "HKLM", true),
-            (RegistryHive.CurrentUser, RegistryView.Default, @"Software\Classes\CLSID", "HKCU", Environment.Is64BitOperatingSystem),
-            (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Classes\CLSID", @"HKLM\SOFTWARE\WOW6432Node\Classes\CLSID", false)
-        };
+        var snapshot = GetOrBuildClsidSnapshot();
 
-        foreach (var (hive, view, subPath, displayRoot, is64View) in clsidRoots)
+        foreach (var entry in snapshot)
         {
-            try
+            if (IsPathMatching(entry.ServerPath, profile))
             {
-                using var baseKey = RegistryKey.OpenBaseKey(hive, view);
-                using var clsidKey = baseKey.OpenSubKey(subPath);
-                if (clsidKey == null) continue;
+                matchedClsids.Add(entry.Clsid);
 
-                foreach (var clsid in clsidKey.GetSubKeyNames())
+                ResidualScanner.AddResidualIfUnique(results, new ResidualItem
                 {
-                    try
-                    {
-                        using var singleKey = clsidKey.OpenSubKey(clsid);
-                        if (singleKey == null) continue;
-
-                        foreach (var sub in new[] { "InprocServer32", "LocalServer32", "DefaultIcon" })
-                        {
-                            using var serverKey = singleKey.OpenSubKey(sub);
-                            if (serverKey == null) continue;
-
-                            string? serverPath = serverKey.GetValue(string.Empty) as string;
-                            if (IsPathMatching(serverPath, profile))
-                            {
-                                matchedClsids.Add(clsid);
-
-                                string fullKey = displayRoot.StartsWith("HKLM\\SOFTWARE\\WOW6432Node")
-                                    ? $@"{displayRoot}\{clsid}"
-                                    : $@"{displayRoot}\{subPath}\{clsid}";
-
-                                ResidualScanner.AddResidualIfUnique(results, new ResidualItem
-                                {
-                                    Type = ResidualType.RegistryKey,
-                                    Category = ResidualCategory.RegistryKey,
-                                    Path = fullKey,
-                                    Is64BitRegistryView = is64View,
-                                    Confidence = ConfidenceLevel.High,
-                                    Reason = $"反向引用：关联 COM / CLSID 组件死链 ({sub})",
-                                    IsSelected = true
-                                });
-                                break;
-                            }
-                        }
-                    }
-                    catch { }
-                }
+                    Type = ResidualType.RegistryKey,
+                    Category = ResidualCategory.RegistryKey,
+                    Path = entry.FullKeyPath,
+                    ValuePreview = entry.ServerPath,
+                    Is64BitRegistryView = entry.Is64View,
+                    Confidence = ConfidenceLevel.High,
+                    Reason = $"反向引用：关联 COM / CLSID 组件死链 ({entry.ServerSubKey})",
+                    IsSelected = true
+                });
             }
-            catch { }
         }
     }
 
-    private static void ScanServices(TargetProfile profile, List<ResidualItem> results)
+    private static List<ClsidSnapshotEntry> GetOrBuildClsidSnapshot()
+    {
+        lock (ClsidCacheLock)
+        {
+            if (_cachedClsidSnapshot != null && (DateTime.UtcNow - _clsidSnapshotTimeUtc).TotalSeconds < 45)
+            {
+                return _cachedClsidSnapshot;
+            }
+
+            var list = new List<ClsidSnapshotEntry>(4096);
+            var clsidRoots = new (RegistryHive Hive, RegistryView View, string SubPath, string DisplayRoot, bool Is64View)[]
+            {
+                (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Classes\CLSID", "HKLM", true),
+                (RegistryHive.CurrentUser, RegistryView.Default, @"Software\Classes\CLSID", "HKCU", Environment.Is64BitOperatingSystem),
+                (RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Classes\CLSID", @"HKLM\SOFTWARE\WOW6432Node\Classes\CLSID", false)
+            };
+
+            foreach (var (hive, view, subPath, displayRoot, is64View) in clsidRoots)
+            {
+                if (!Environment.Is64BitOperatingSystem && !is64View) continue;
+
+                try
+                {
+                    using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                    using var clsidKey = baseKey.OpenSubKey(subPath);
+                    if (clsidKey == null) continue;
+
+                    foreach (var clsid in clsidKey.GetSubKeyNames())
+                    {
+                        try
+                        {
+                            using var singleKey = clsidKey.OpenSubKey(clsid);
+                            if (singleKey == null) continue;
+
+                            foreach (var sub in new[] { "InprocServer32", "LocalServer32", "DefaultIcon" })
+                            {
+                                using var serverKey = singleKey.OpenSubKey(sub);
+                                if (serverKey == null) continue;
+
+                                string? serverPath = serverKey.GetValue(string.Empty) as string;
+                                if (!string.IsNullOrWhiteSpace(serverPath))
+                                {
+                                    string fullKey = displayRoot.StartsWith(@"HKLM\SOFTWARE\WOW6432Node", StringComparison.OrdinalIgnoreCase)
+                                        ? $@"{displayRoot}\{clsid}"
+                                        : $@"{displayRoot}\{subPath}\{clsid}";
+
+                                    list.Add(new ClsidSnapshotEntry(clsid, fullKey, sub, serverPath, is64View));
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+
+            _cachedClsidSnapshot = list;
+            _clsidSnapshotTimeUtc = DateTime.UtcNow;
+            return list;
+        }
+    }
+
+    private static void ScanServicesAndDrivers(TargetProfile profile, List<ResidualItem> results)
     {
         try
         {
@@ -121,27 +171,197 @@ public class ReverseReferenceScanner
                     if (sKey == null) continue;
 
                     string? imagePath = sKey.GetValue("ImagePath") as string;
-                    if (IsPathMatching(imagePath, profile))
+                    if (!IsPathMatching(imagePath, profile))
+                        continue;
+
+                    int svcType = sKey.GetValue("Type") is int t ? t : 0x10;
+                    bool isKernelOrFsDriver = svcType is 1 or 2 ||
+                                              (imagePath != null && imagePath.EndsWith(".sys", StringComparison.OrdinalIgnoreCase));
+
+                    string? oemInf = null;
+                    string? owners = sKey.GetValue("Owners") is string[] arr ? string.Join(";", arr) : sKey.GetValue("Owners") as string;
+                    if (!string.IsNullOrWhiteSpace(owners))
                     {
-                        string fullKey = $@"HKLM\SYSTEM\CurrentControlSet\Services\{serviceName}";
-                        ResidualScanner.AddResidualIfUnique(results, new ResidualItem
-                        {
-                            Type = ResidualType.RegistryKey,
-                            Category = ResidualCategory.Service,
-                            ValueName = serviceName,
-                            ValuePreview = imagePath,
-                            Path = fullKey,
-                            Is64BitRegistryView = true,
-                            Confidence = ConfidenceLevel.High,
-                            Reason = $"反向引用：遗留 Windows 服务项 ({serviceName})",
-                            IsSelected = true
-                        });
+                        var m = OemInfRegex.Match(owners);
+                        if (m.Success) oemInf = m.Value;
                     }
+
+                    string fullKey = $@"HKLM\SYSTEM\CurrentControlSet\Services\{serviceName}";
+                    ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                    {
+                        Type = ResidualType.RegistryKey,
+                        Category = isKernelOrFsDriver ? ResidualCategory.DriverPackage : ResidualCategory.Service,
+                        ValueName = serviceName,
+                        ValuePreview = imagePath,
+                        DriverPublishedInfName = oemInf,
+                        Path = fullKey,
+                        Is64BitRegistryView = true,
+                        Confidence = ConfidenceLevel.High,
+                        Reason = isKernelOrFsDriver
+                            ? $"反向引用：遗留内核驱动服务 ({serviceName}{(oemInf != null ? $", {oemInf}" : "")})"
+                            : $"反向引用：遗留 Windows 服务项 ({serviceName})",
+                        IsSelected = true
+                    });
                 }
                 catch { }
             }
         }
         catch { }
+    }
+
+    private static void ScanEnvironmentPaths(TargetProfile profile, List<ResidualItem> results)
+    {
+        if (!profile.HasValidLocation) return;
+
+        var envTargets = new (RegistryHive Hive, string SubKey, string HivePrefix, bool IsSystem, string ScopeLabel)[]
+        {
+            (RegistryHive.LocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "HKLM", true, "系统环境变量 PATH"),
+            (RegistryHive.CurrentUser, @"Environment", "HKCU", false, "用户环境变量 PATH")
+        };
+
+        foreach (var (hive, subKey, hivePrefix, isSystem, scopeLabel) in envTargets)
+        {
+            try
+            {
+                using var baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64);
+                using var envKey = baseKey.OpenSubKey(subKey, false);
+                if (envKey == null) continue;
+
+                string? rawPath = envKey.GetValue("Path", null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string;
+                if (string.IsNullOrWhiteSpace(rawPath)) continue;
+
+                var segments = rawPath.Split(';', StringSplitOptions.RemoveEmptyEntries);
+                foreach (var seg in segments)
+                {
+                    string cleanSeg = seg.Trim().Trim('"');
+                    if (string.IsNullOrWhiteSpace(cleanSeg)) continue;
+
+                    if (IsPathMatching(cleanSeg, profile))
+                    {
+                        ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                        {
+                            Type = ResidualType.RegistryValue,
+                            Category = ResidualCategory.EnvironmentPath,
+                            Path = $@"{hivePrefix}\{subKey}",
+                            ValueName = $"Path [{cleanSeg}]",
+                            ValuePreview = cleanSeg,
+                            EnvironmentVariableName = "Path",
+                            IsSystemEnvironmentVariable = isSystem,
+                            PathSegmentToRemove = cleanSeg,
+                            Is64BitRegistryView = true,
+                            Confidence = ConfidenceLevel.High,
+                            Reason = $"反向引用：{scopeLabel} 残留路径死链",
+                            IsSelected = true
+                        });
+                    }
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void ScanBrowserExtensionsAndPolicies(
+        TargetProfile profile,
+        HashSet<string> matchedClsids,
+        List<ResidualItem> results)
+    {
+        // 1. NativeMessagingHosts across Chrome, Edge, Brave, and Mozilla
+        var browserHostPaths = new[]
+        {
+            @"SOFTWARE\Google\Chrome\NativeMessagingHosts",
+            @"SOFTWARE\Microsoft\Edge\NativeMessagingHosts",
+            @"SOFTWARE\BraveSoftware\Brave-Browser\NativeMessagingHosts",
+            @"SOFTWARE\Mozilla\NativeMessagingHosts"
+        };
+
+        var rootViews = new (RegistryHive Hive, RegistryView View, string Prefix, bool Is64View)[]
+        {
+            (RegistryHive.CurrentUser, RegistryView.Default, "HKCU", Environment.Is64BitOperatingSystem),
+            (RegistryHive.LocalMachine, RegistryView.Registry64, "HKLM", true),
+            (RegistryHive.LocalMachine, RegistryView.Registry32, @"HKLM\SOFTWARE\WOW6432Node", false)
+        };
+
+        foreach (var (hive, view, prefix, is64View) in rootViews)
+        {
+            if (!Environment.Is64BitOperatingSystem && !is64View) continue;
+
+            try
+            {
+                using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                foreach (var relHostPath in browserHostPaths)
+                {
+                    using var hostRoot = baseKey.OpenSubKey(relHostPath);
+                    if (hostRoot == null) continue;
+
+                    foreach (var hostName in hostRoot.GetSubKeyNames())
+                    {
+                        using var singleHost = hostRoot.OpenSubKey(hostName);
+                        string? manifestPath = singleHost?.GetValue(string.Empty) as string;
+                        if (IsPathMatching(manifestPath, profile))
+                        {
+                            string fullKey = prefix.StartsWith(@"HKLM\SOFTWARE\WOW6432Node", StringComparison.OrdinalIgnoreCase)
+                                ? $@"{prefix}\{relHostPath.Substring(9)}\{hostName}"
+                                : $@"{prefix}\{relHostPath}\{hostName}";
+
+                            ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                            {
+                                Type = ResidualType.RegistryKey,
+                                Category = ResidualCategory.BrowserExtension,
+                                Path = fullKey,
+                                ValuePreview = manifestPath,
+                                Is64BitRegistryView = is64View,
+                                Confidence = ConfidenceLevel.High,
+                                Reason = $"反向引用：浏览器 NativeMessaging 宿主扩展 ({hostName})",
+                                IsSelected = true
+                            });
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // 2. Enterprise Policy ExtensionInstallForcelist & Software\Policies vendor keys
+        var policyBrowsers = new[]
+        {
+            @"SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist",
+            @"SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist",
+            @"SOFTWARE\Policies\BraveSoftware\Brave\ExtensionInstallForcelist"
+        };
+
+        foreach (var (hive, view, prefix, is64View) in rootViews.Where(r => r.Is64View))
+        {
+            try
+            {
+                using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                foreach (var polPath in policyBrowsers)
+                {
+                    using var polKey = baseKey.OpenSubKey(polPath);
+                    if (polKey == null) continue;
+
+                    foreach (var valName in polKey.GetValueNames())
+                    {
+                        string? valData = polKey.GetValue(valName) as string;
+                        if (IsPathMatching(valData, profile))
+                        {
+                            ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                            {
+                                Type = ResidualType.RegistryValue,
+                                Category = ResidualCategory.BrowserExtension,
+                                Path = $@"{prefix}\{polPath}",
+                                ValueName = valName,
+                                ValuePreview = valData,
+                                Is64BitRegistryView = is64View,
+                                Confidence = ConfidenceLevel.High,
+                                Reason = "反向引用：浏览器强制策略扩展登记项",
+                                IsSelected = true
+                            });
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
     }
 
     private static void ScanAppPaths(TargetProfile profile, List<ResidualItem> results)
@@ -155,6 +375,8 @@ public class ReverseReferenceScanner
 
         foreach (var (hive, view, subPath, hivePrefix, is64View) in appPathRoots)
         {
+            if (!Environment.Is64BitOperatingSystem && !is64View) continue;
+
             try
             {
                 using var baseKey = RegistryKey.OpenBaseKey(hive, view);
@@ -172,11 +394,12 @@ public class ReverseReferenceScanner
                         string? pathVal = singleAp.GetValue("Path") as string;
 
                         bool pathMatched = IsPathMatching(defaultVal, profile) || IsPathMatching(pathVal, profile);
-                        bool exeMatched = !profile.HasValidLocation && profile.MainExeNames.Contains(exeName);
+                        bool exeMatched = !profile.HasValidLocation && profile.MainExeNames.Contains(exeName) &&
+                                          (string.IsNullOrEmpty(defaultVal) || !File.Exists(Environment.ExpandEnvironmentVariables(defaultVal.Trim('"'))));
 
                         if (pathMatched || exeMatched)
                         {
-                            string fullKey = hivePrefix.StartsWith("HKLM\\SOFTWARE\\WOW6432Node")
+                            string fullKey = hivePrefix.StartsWith(@"HKLM\SOFTWARE\WOW6432Node", StringComparison.OrdinalIgnoreCase)
                                 ? $@"{hivePrefix}\{exeName}"
                                 : $@"{hivePrefix}\{subPath}\{exeName}";
 
@@ -185,6 +408,7 @@ public class ReverseReferenceScanner
                                 Type = ResidualType.RegistryKey,
                                 Category = ResidualCategory.RegistryKey,
                                 Path = fullKey,
+                                ValuePreview = defaultVal,
                                 Is64BitRegistryView = is64View,
                                 Confidence = ConfidenceLevel.High,
                                 Reason = $"反向引用：App Paths 快捷命令 ({exeName})",
@@ -274,7 +498,9 @@ public class ReverseReferenceScanner
             }))
             {
                 string relPath = taskFile.Substring(tasksDir.Length).TrimStart('\\');
-                if (relPath.StartsWith("Microsoft\\", StringComparison.OrdinalIgnoreCase)) continue;
+                if (relPath.StartsWith("Microsoft\\", StringComparison.OrdinalIgnoreCase) ||
+                    relPath.StartsWith("Windows\\", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
                 try
                 {
@@ -300,42 +526,10 @@ public class ReverseReferenceScanner
         catch { }
     }
 
-    private static void ScanMsiMetadata(TargetProfile profile, List<ResidualItem> results)
-    {
-        if (!profile.HasValidLocation) return;
-
-        try
-        {
-            using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-            using var foldersKey = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\Folders");
-            if (foldersKey == null) return;
-
-            foreach (var valName in foldersKey.GetValueNames())
-            {
-                if (IsPathMatching(valName, profile))
-                {
-                    ResidualScanner.AddResidualIfUnique(results, new ResidualItem
-                    {
-                        Type = ResidualType.RegistryValue,
-                        Category = ResidualCategory.MsiMetadata,
-                        Path = @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\Folders",
-                        ValueName = valName,
-                        Is64BitRegistryView = true,
-                        Confidence = ConfidenceLevel.High,
-                        Reason = "反向引用：Windows Installer 目录登记项",
-                        IsSelected = true
-                    });
-                }
-            }
-        }
-        catch { }
-    }
-
     private static void ScanShellExtensions(TargetProfile profile, HashSet<string> matchedClsids, List<ResidualItem> results)
     {
         if (matchedClsids.Count == 0 && string.IsNullOrWhiteSpace(profile.DisplayName)) return;
 
-        // 1. Approved Shell Extensions across HKLM (64/32) and HKCU
         var approvedRoots = new (RegistryHive Hive, RegistryView View, string SubPath, string FullDisplayPath, bool Is64View)[]
         {
             (RegistryHive.LocalMachine, RegistryView.Registry64,
@@ -354,6 +548,8 @@ public class ReverseReferenceScanner
 
         foreach (var (hive, view, subPath, fullDisplayPath, is64View) in approvedRoots)
         {
+            if (!Environment.Is64BitOperatingSystem && !is64View) continue;
+
             try
             {
                 using var baseKey = RegistryKey.OpenBaseKey(hive, view);
@@ -388,7 +584,6 @@ public class ReverseReferenceScanner
             catch { }
         }
 
-        // 2. ContextMenuHandlers under HKCR (*, Directory, Directory\Background, Folder)
         if (matchedClsids.Count > 0)
         {
             var handlerPaths = new[]
@@ -434,7 +629,7 @@ public class ReverseReferenceScanner
     private static bool IsPathMatching(string? text, TargetProfile profile)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
-        string lower = Environment.ExpandEnvironmentVariables(text).ToLowerInvariant();
+        string lower = Environment.ExpandEnvironmentVariables(text).ToLowerInvariant().Trim('"', ' ');
 
         // 1. Primary path prefix check when the target app has a known installation directory
         if (profile.HasValidLocation)
@@ -466,7 +661,7 @@ public class ReverseReferenceScanner
         foreach (var exe in profile.MainExeNames)
         {
             string exeLower = exe.ToLowerInvariant();
-            if (exeLower.Length < 8) continue; // e.g. at least 4 chars before .exe
+            if (exeLower.Length < 8) continue;
 
             if (lower.Contains("\\" + exeLower) || lower.Equals(exeLower))
             {
@@ -476,7 +671,6 @@ public class ReverseReferenceScanner
                 string extractedExe = AppLocator.ExtractExeFromCommand(text);
                 if (!string.IsNullOrEmpty(extractedExe) && File.Exists(extractedExe))
                 {
-                    // If the binary still exists in some other valid installation directory, do not treat it as an orphaned dead link
                     continue;
                 }
                 return true;

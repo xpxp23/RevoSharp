@@ -2,8 +2,10 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using RevoSharp.App.Converters;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Discovery;
 using RevoSharp.Engine.Execution;
@@ -17,12 +19,13 @@ public partial class MainViewModel : ObservableObject
     private readonly AppLocator _appLocator = new();
     private readonly UninstallerRunner _uninstallerRunner = new();
     private readonly ResidualScanner _residualScanner = new();
+    private readonly DispatcherTimer _searchDebounceTimer;
     private CancellationTokenSource? _sizeCalculationCts;
 
     private List<InstalledApp> _allApps = [];
 
     /// <summary>
-    /// Full unfiltered list of installed applications, used by Hunter Mode so search text never blinds target matching.
+    /// Full unfiltered list of installed applications, used by Hunter Mode and Sibling Protection so search text never blinds target matching.
     /// </summary>
     public IReadOnlyList<InstalledApp> AllApps => _allApps;
 
@@ -50,6 +53,17 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string _statusText = "就绪";
 
+    [ObservableProperty]
+    private int _multiSelectedCount;
+
+    [ObservableProperty]
+    private string _multiSelectionSummaryText = string.Empty;
+
+    [ObservableProperty]
+    private string _currentThemeButtonText = $"主题: {App.CurrentThemeDisplay}";
+
+    public bool IsMultiSelectionActive => MultiSelectedCount >= 2;
+
     public int TotalAppCount => _allApps.Count;
     public int RecentAppCount => _allApps.Count(a => a.IsRecentlyInstalled);
     public int TracedAppCount => _allApps.Count(a => a.HasTraceLog);
@@ -58,22 +72,70 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        _searchDebounceTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(140)
+        };
+        _searchDebounceTimer.Tick += (_, _) =>
+        {
+            _searchDebounceTimer.Stop();
+            ApplyFilter();
+        };
+
         _ = LoadAppsAsync();
     }
 
     partial void OnSearchTextChanged(string value)
     {
-        ApplyFilter();
+        _searchDebounceTimer.Stop();
+        _searchDebounceTimer.Start();
     }
 
     partial void OnSelectedCategoryFilterChanged(string value)
     {
+        _searchDebounceTimer.Stop();
         ApplyFilter();
     }
 
     partial void OnIncludeWindowsAppsChanged(bool value)
     {
         _ = LoadAppsAsync();
+    }
+
+    partial void OnMultiSelectedCountChanged(int value)
+    {
+        OnPropertyChanged(nameof(IsMultiSelectionActive));
+    }
+
+    public void UpdateMultiSelection(IReadOnlyCollection<InstalledApp> selectedApps)
+    {
+        MultiSelectedCount = selectedApps.Count;
+        if (selectedApps.Count >= 2)
+        {
+            long totalBytes = selectedApps.Sum(a => Math.Max(0, a.EstimatedSizeInBytes));
+            string sizeStr = totalBytes > 0 ? $" · 预计占用 {FormatBytes(totalBytes)}" : string.Empty;
+            MultiSelectionSummaryText = $"已批量选中 {selectedApps.Count} 款软件{sizeStr}";
+        }
+        else
+        {
+            MultiSelectionSummaryText = string.Empty;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
+        if (bytes >= 1024L * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        if (bytes >= 1024L) return $"{bytes / 1024.0:F0} KB";
+        return $"{bytes} B";
+    }
+
+    [RelayCommand]
+    public void CycleTheme()
+    {
+        string modeName = App.CycleThemeMode();
+        CurrentThemeButtonText = $"主题: {modeName}";
+        StatusText = $"已切换界面主题模式为：{modeName}";
     }
 
     [RelayCommand]
@@ -103,7 +165,12 @@ public partial class MainViewModel : ObservableObject
             int recentCount = _allApps.Count(a => a.IsRecentlyInstalled);
             StatusText = $"共发现 {_allApps.Count} 款程序（近期新装 {recentCount} 款 · 已关联监控日志 {tracedCount} 款）";
 
-            // Asynchronously populate missing folder sizes in the background, marshaling property updates onto the UI thread
+            // Preload app icons and missing folder sizes in background workers with batched UI thread dispatching
+            AppIconConverter.PreloadIconsInBackground(
+                _allApps,
+                token,
+                update => Application.Current?.Dispatcher.InvokeAsync(update));
+
             _ = _appLocator.PopulateMissingSizesAsync(
                 _allApps,
                 token,

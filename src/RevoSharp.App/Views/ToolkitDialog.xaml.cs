@@ -39,9 +39,20 @@ public partial class ToolkitDialog
         {
             _allAutostarts = await Task.Run(() => _hunterService.GetAllAutostartEntries());
             ApplyAutostartFilter();
-            BackupGrid.ItemsSource = await RegistryBackup.GetBackupManifestsAsync();
-            TraceLogGrid.ItemsSource = await _appLocator.GetAllTraceLogsAsync();
-            StatusTextBlock.Text = $"已加载 {_allAutostarts.Count} 项开机自启条目、历史备份档案与安装监控日志。";
+
+            var backups = await RegistryBackup.GetBackupManifestsAsync();
+            BackupGrid.ItemsSource = backups;
+            BackupEmptyOverlay.Visibility = backups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (backups.Count > 0)
+            {
+                BackupGrid.SelectedIndex = 0;
+            }
+
+            var logs = await _appLocator.GetAllTraceLogsAsync();
+            TraceLogGrid.ItemsSource = logs;
+            TraceLogEmptyOverlay.Visibility = logs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            StatusTextBlock.Text = $"已加载 {_allAutostarts.Count} 项开机自启条目、{backups.Count} 份备份档案与 {logs.Count} 份安装监控日志。";
         }
         finally
         {
@@ -57,19 +68,21 @@ public partial class ToolkitDialog
     private void ApplyAutostartFilter()
     {
         string kw = AutostartSearchBox?.Text?.Trim() ?? string.Empty;
-        if (string.IsNullOrEmpty(kw))
-        {
-            AutostartGrid.ItemsSource = _allAutostarts;
-            return;
-        }
+        var filtered = string.IsNullOrEmpty(kw)
+            ? _allAutostarts
+            : _allAutostarts
+                .Where(a =>
+                    a.Name.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                    a.Command.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                    a.Publisher.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                    a.LocationType.Contains(kw, StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
-        AutostartGrid.ItemsSource = _allAutostarts
-            .Where(a =>
-                a.Name.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
-                a.Command.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
-                a.Publisher.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
-                a.LocationType.Contains(kw, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        AutostartGrid.ItemsSource = filtered;
+        if (AutostartEmptyOverlay != null)
+        {
+            AutostartEmptyOverlay.Visibility = filtered.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
 
     private async void OnRefreshAutostartClick(object sender, RoutedEventArgs e)
@@ -152,24 +165,24 @@ public partial class ToolkitDialog
 
         _allAutostarts = await Task.Run(() => _hunterService.GetAllAutostartEntries());
         ApplyAutostartFilter();
-        BackupGrid.ItemsSource = await RegistryBackup.GetBackupManifestsAsync();
+        var backups = await RegistryBackup.GetBackupManifestsAsync();
+        BackupGrid.ItemsSource = backups;
+        BackupEmptyOverlay.Visibility = backups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void OnBackupSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (BackupGrid.SelectedItem is BackupManifest manifest)
         {
-            if (manifest.BackedUpTargetDescriptions.Count > 0)
-            {
-                BackupPreviewTextBlock.Text = $"备份明细 ({manifest.BackedUpTargetDescriptions.Count} 项): " +
-                                              string.Join("  |  ", manifest.BackedUpTargetDescriptions.Take(6));
-                BackupPreviewTextBlock.ToolTip = manifest.DetailsTooltipText;
-            }
-            else
-            {
-                BackupPreviewTextBlock.Text = manifest.SummaryText;
-                BackupPreviewTextBlock.ToolTip = manifest.SummaryText;
-            }
+            BackupPreviewTextBlock.Text = $"【{manifest.AppName}】备份条目明细 (共 {manifest.BackedUpTargetDescriptions.Count} 项)：";
+            BackupDetailsListBox.ItemsSource = manifest.BackedUpTargetDescriptions.Count > 0
+                ? manifest.BackedUpTargetDescriptions
+                : new List<string> { manifest.SummaryText };
+        }
+        else
+        {
+            BackupPreviewTextBlock.Text = "选中任意备份记录可在此滚动检视其包含的注册表路径、计划任务、环境变量与文件快照详情：";
+            BackupDetailsListBox.ItemsSource = null;
         }
     }
 
@@ -190,7 +203,7 @@ public partial class ToolkitDialog
     private async void OnRestoreBackupClick(object sender, RoutedEventArgs e)
     {
         if (BackupGrid.SelectedItem is not BackupManifest manifest) return;
-        StatusTextBlock.Text = $"正在还原【{manifest.AppName}】的注册表、计划任务与文件快照备份...";
+        StatusTextBlock.Text = $"正在还原【{manifest.AppName}】的注册表、计划任务、环境变量与文件快照备份...";
         int count = await RegistryBackup.RestoreBackupManifestAsync(manifest);
         StatusTextBlock.Text = count > 0
             ? $"已成功原位还原 {count} 份备份项（大型目录可在系统回收站中直接还原）。"
@@ -231,7 +244,9 @@ public partial class ToolkitDialog
                 }
             }
             if (File.Exists(manifest.ManifestPath)) File.Delete(manifest.ManifestPath);
-            BackupGrid.ItemsSource = await RegistryBackup.GetBackupManifestsAsync();
+            var backups = await RegistryBackup.GetBackupManifestsAsync();
+            BackupGrid.ItemsSource = backups;
+            BackupEmptyOverlay.Visibility = backups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             StatusTextBlock.Text = $"已删除【{manifest.AppName}】的备份记录。";
         }
         catch { }
@@ -263,7 +278,9 @@ public partial class ToolkitDialog
 
                 string destPath = Path.Combine(AppLocator.LogDirectory, Path.GetFileName(dlg.FileName));
                 await TraceLogSerializer.SaveAsync(log, destPath);
-                TraceLogGrid.ItemsSource = await _appLocator.GetAllTraceLogsAsync();
+                var logs = await _appLocator.GetAllTraceLogsAsync();
+                TraceLogGrid.ItemsSource = logs;
+                TraceLogEmptyOverlay.Visibility = logs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
                 StatusTextBlock.Text = $"已成功导入【{log.AppName}】的安装监控日志。";
             }
             catch (Exception ex)
@@ -315,12 +332,17 @@ public partial class ToolkitDialog
     private void OnCleanByTraceLogClick(object sender, RoutedEventArgs e)
     {
         if (TraceLogGrid.SelectedItem is not TraceLog log) return;
+        string regPath = !string.IsNullOrWhiteSpace(log.UninstallKeyId)
+            ? $@"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{log.UninstallKeyId}"
+            : string.Empty;
+
         AppToCleanFromLog = new InstalledApp
         {
             Id = $"TraceLog_{log.AppName}",
-            DisplayName = log.AppName,
+            DisplayName = !string.IsNullOrWhiteSpace(log.DetectedDisplayName) ? log.DetectedDisplayName : log.AppName,
             InstallLocation = log.DetectedInstallLocation,
             UninstallKeyName = log.UninstallKeyId,
+            RegistryKeyPath = regPath,
             HasTraceLog = true,
             TraceLogPath = log.FilePath
         };
@@ -346,7 +368,9 @@ public partial class ToolkitDialog
         {
             if (File.Exists(log.FilePath)) File.Delete(log.FilePath);
             await TraceLogSerializer.LoadOrSyncIndexAsync(AppLocator.LogDirectory);
-            TraceLogGrid.ItemsSource = await _appLocator.GetAllTraceLogsAsync();
+            var logs = await _appLocator.GetAllTraceLogsAsync();
+            TraceLogGrid.ItemsSource = logs;
+            TraceLogEmptyOverlay.Visibility = logs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             StatusTextBlock.Text = $"已删除【{log.AppName}】的安装监控日志。";
         }
         catch { }

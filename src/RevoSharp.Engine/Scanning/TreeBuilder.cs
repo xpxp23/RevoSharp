@@ -38,8 +38,7 @@ public static class TreeBuilder
                 string part = parts[i];
                 currentPath += "\\" + part;
 
-                var child = currentNode.Children.FirstOrDefault(c => c.Name.Equals(part, StringComparison.OrdinalIgnoreCase));
-                if (child == null)
+                if (!currentNode.ChildLookup.TryGetValue(part, out var child))
                 {
                     child = new RegistryTreeNode
                     {
@@ -47,8 +46,9 @@ public static class TreeBuilder
                         FullPath = currentPath,
                         Parent = currentNode,
                         IsMatched = false,
-                        IsExpanded = true
+                        IsExpanded = i <= 2
                     };
+                    currentNode.ChildLookup[part] = child;
                     currentNode.Children.Add(child);
                 }
                 currentNode = child;
@@ -61,19 +61,24 @@ public static class TreeBuilder
                     ? $"[{item.ValueName}]"
                     : $"[{item.ValueName}] = {item.ValuePreview}";
 
-                var valNode = new RegistryTreeNode
+                string valKey = $"__VAL__{item.ValueName}";
+                if (!currentNode.ChildLookup.TryGetValue(valKey, out var valNode))
                 {
-                    Name = valDisplay,
-                    FullPath = $"{currentPath} [{item.ValueName}]",
-                    Parent = currentNode,
-                    IsMatched = true,
-                    MatchReason = item.Reason,
-                    ValueName = item.ValueName,
-                    Category = item.Category,
-                    AssociatedItem = item,
-                    IsExpanded = true
-                };
-                currentNode.Children.Add(valNode);
+                    valNode = new RegistryTreeNode
+                    {
+                        Name = valDisplay,
+                        FullPath = $"{currentPath} [{item.ValueName}]",
+                        Parent = currentNode,
+                        IsMatched = true,
+                        MatchReason = item.Reason,
+                        ValueName = item.ValueName,
+                        Category = item.Category,
+                        AssociatedItem = item,
+                        IsExpanded = false
+                    };
+                    currentNode.ChildLookup[valKey] = valNode;
+                    currentNode.Children.Add(valNode);
+                }
             }
             else
             {
@@ -132,8 +137,7 @@ public static class TreeBuilder
                 currentPath += "\\" + part;
                 bool isLast = i == parts.Length - 1;
 
-                var child = currentNode.Children.FirstOrDefault(c => c.Name.Equals(part, StringComparison.OrdinalIgnoreCase));
-                if (child == null)
+                if (!currentNode.ChildLookup.TryGetValue(part, out var child))
                 {
                     child = new FileSystemTreeNode
                     {
@@ -142,8 +146,9 @@ public static class TreeBuilder
                         Parent = currentNode,
                         IsFile = isLast && item.Type == ResidualType.File,
                         IsMatched = false,
-                        IsExpanded = true
+                        IsExpanded = i <= 2
                     };
+                    currentNode.ChildLookup[part] = child;
                     currentNode.Children.Add(child);
                 }
                 currentNode = child;

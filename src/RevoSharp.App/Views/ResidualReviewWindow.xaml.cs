@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using RevoSharp.App.ViewModels;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
@@ -13,10 +15,11 @@ public partial class ResidualReviewWindow
     public ResidualReviewWindow(
         InstalledApp app,
         List<ResidualItem>? initialResiduals = null,
-        ScanMode initialScanMode = ScanMode.Moderate)
+        ScanMode initialScanMode = ScanMode.Moderate,
+        IReadOnlyList<InstalledApp>? otherInstalledApps = null)
     {
         InitializeComponent();
-        ViewModel = new ResidualReviewViewModel(app, initialResiduals)
+        ViewModel = new ResidualReviewViewModel(app, initialResiduals, otherInstalledApps)
         {
             CurrentScanMode = initialScanMode
         };
@@ -31,6 +34,26 @@ public partial class ResidualReviewWindow
 
         AppNameTextBlock.Text = $"【{app.DisplayName}】深度残留清单";
         Loaded += OnWindowLoadedOnce;
+
+        // Ensure right-clicking any TreeViewItem immediately selects it before ContextMenu opens
+        RegTreeView.PreviewMouseRightButtonDown += OnTreeViewPreviewMouseRightButtonDown;
+        FileTreeView.PreviewMouseRightButtonDown += OnTreeViewPreviewMouseRightButtonDown;
+    }
+
+    private static void OnTreeViewPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source) return;
+        DependencyObject? current = source;
+        while (current != null && current is not TreeViewItem)
+        {
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        if (current is TreeViewItem item)
+        {
+            item.IsSelected = true;
+            item.Focus();
+        }
     }
 
     private async void OnWindowLoadedOnce(object sender, RoutedEventArgs e)
@@ -69,6 +92,38 @@ public partial class ResidualReviewWindow
         }
     }
 
+    private void OnRegTreeOpenLocationClick(object sender, RoutedEventArgs e)
+    {
+        if (RegTreeView?.SelectedItem != null)
+        {
+            ViewModel.OpenTreeNodeLocation(RegTreeView.SelectedItem);
+        }
+    }
+
+    private void OnRegTreeCopyPathClick(object sender, RoutedEventArgs e)
+    {
+        if (RegTreeView?.SelectedItem != null)
+        {
+            ViewModel.CopyTreeNodePath(RegTreeView.SelectedItem);
+        }
+    }
+
+    private void OnFileTreeOpenLocationClick(object sender, RoutedEventArgs e)
+    {
+        if (FileTreeView?.SelectedItem != null)
+        {
+            ViewModel.OpenTreeNodeLocation(FileTreeView.SelectedItem);
+        }
+    }
+
+    private void OnFileTreeCopyPathClick(object sender, RoutedEventArgs e)
+    {
+        if (FileTreeView?.SelectedItem != null)
+        {
+            ViewModel.CopyTreeNodePath(FileTreeView.SelectedItem);
+        }
+    }
+
     private async void OnCleanAllClick(object sender, RoutedEventArgs e)
     {
         if (ViewModel.GetTotalSelectedCount() == 0)
@@ -77,7 +132,6 @@ public partial class ResidualReviewWindow
             return;
         }
 
-        // Always evaluate low-confidence count across the entire unfiltered list so active category/search filters never bypass confirmation
         int lowConfCount = ViewModel.GetSelectedLowConfidenceCount();
         if (lowConfCount > 0)
         {
