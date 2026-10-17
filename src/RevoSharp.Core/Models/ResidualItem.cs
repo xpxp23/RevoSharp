@@ -18,6 +18,7 @@ public class ResidualItem : INotifyPropertyChanged
     public required ConfidenceLevel Confidence { get; init; }
     public required string Reason { get; init; }
     public long SizeInBytes { get; init; }
+    public string SourceAppName { get; set; } = string.Empty;
 
     public bool IsSelected
     {
@@ -31,6 +32,42 @@ public class ResidualItem : INotifyPropertyChanged
             }
         }
     }
+
+    public bool HasSourceAppName => !string.IsNullOrWhiteSpace(SourceAppName);
+    public bool HasValueName => !string.IsNullOrEmpty(ValueName);
+    public bool HasValuePreview => !string.IsNullOrEmpty(ValuePreview);
+
+    /// <summary>
+    /// Parent directory or registry key prefix (with trailing slash) for muted secondary syntax highlighting.
+    /// </summary>
+    public string PathPrefixDisplay
+    {
+        get
+        {
+            int lastSlash = Path.LastIndexOf('\\');
+            return lastSlash >= 0 && lastSlash < Path.Length - 1
+                ? Path.Substring(0, lastSlash + 1)
+                : string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Leaf folder, file, or registry key name for primary bold syntax highlighting.
+    /// </summary>
+    public string PathLeafDisplay
+    {
+        get
+        {
+            int lastSlash = Path.LastIndexOf('\\');
+            return lastSlash >= 0 && lastSlash < Path.Length - 1
+                ? Path.Substring(lastSlash + 1)
+                : Path;
+        }
+    }
+
+    public string ValueBadgeText => string.IsNullOrEmpty(ValueName) ? string.Empty : $"[{ValueName}]";
+
+    public string ValuePreviewText => string.IsNullOrEmpty(ValuePreview) ? string.Empty : $"= {ValuePreview}";
 
     public string FullDisplayPath
     {

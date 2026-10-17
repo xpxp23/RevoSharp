@@ -27,7 +27,13 @@
                      Icon="{ui:SymbolIcon Delete24}" />
 
         <!-- 2. Main Content Card -->
-        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,12" Padding="20" CornerRadius="8">
+        <Border Grid.Row="1"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                Margin="16,0,16,12"
+                Padding="20"
+                CornerRadius="8">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -49,7 +55,7 @@
                 </StackPanel>
 
                 <!-- Process Monitoring Status -->
-                <Border Grid.Row="1" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" Padding="12" CornerRadius="6" Margin="0,0,0,12">
+                <Border Grid.Row="1" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" Padding="14,12" CornerRadius="6" Margin="0,0,0,12">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />

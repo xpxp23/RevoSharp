@@ -28,7 +28,7 @@ public class UninstallerRunner
         "conhost.exe"
     };
 
-    private static readonly Regex MsiInstallFlagRegex = new(@"(?<=\s|^)[/-][iI](?=\s*\{|\s+"")", RegexOptions.Compiled);
+    private static readonly Regex MsiInstallFlagRegex = new(@"(?<=\s|^)[/-][iI](?=\s*\{|\s+""|\s+[a-zA-Z0-9])", RegexOptions.Compiled);
 
     #region Toolhelp32 & Fast Process Path Interop
     private const uint TH32CS_SNAPPROCESS = 0x00000002;
@@ -82,6 +82,10 @@ public class UninstallerRunner
         if (!forceInteractive && !string.IsNullOrWhiteSpace(app.QuietUninstallString))
         {
             (commandToRun, arguments) = ParseCommand(app.QuietUninstallString);
+            if (commandToRun.Contains("msiexec", StringComparison.OrdinalIgnoreCase))
+            {
+                arguments = MsiInstallFlagRegex.Replace(arguments, "/X");
+            }
         }
         else
         {
@@ -371,7 +375,7 @@ public class UninstallerRunner
 
     public static (string FileName, string Arguments) ParseCommand(string raw)
     {
-        raw = raw.Trim();
+        raw = Environment.ExpandEnvironmentVariables(raw.Trim());
         if (string.IsNullOrEmpty(raw)) return (string.Empty, string.Empty);
 
         if (raw.StartsWith('"'))
@@ -379,7 +383,7 @@ public class UninstallerRunner
             int closingQuote = raw.IndexOf('"', 1);
             if (closingQuote > 1)
             {
-                string file = raw.Substring(1, closingQuote - 1);
+                string file = raw.Substring(1, closingQuote - 1).Trim();
                 string args = raw.Length > closingQuote + 1 ? raw.Substring(closingQuote + 1).Trim() : string.Empty;
                 return (file, args);
             }
@@ -387,7 +391,8 @@ public class UninstallerRunner
 
         if (raw.StartsWith("msiexec", StringComparison.OrdinalIgnoreCase) ||
             raw.StartsWith("rundll32", StringComparison.OrdinalIgnoreCase) ||
-            raw.StartsWith("powershell", StringComparison.OrdinalIgnoreCase))
+            raw.StartsWith("powershell", StringComparison.OrdinalIgnoreCase) ||
+            raw.StartsWith("cmd ", StringComparison.OrdinalIgnoreCase))
         {
             int spaceIdx = raw.IndexOf(' ');
             if (spaceIdx > 0)
@@ -397,12 +402,17 @@ public class UninstallerRunner
             return (raw, string.Empty);
         }
 
-        if (raw.Contains(".exe", StringComparison.OrdinalIgnoreCase))
+        string extractedExe = AppLocator.ExtractExeFromCommand(raw);
+        if (!string.IsNullOrEmpty(extractedExe))
         {
-            int exeIdx = raw.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
-            string file = raw.Substring(0, exeIdx + 4).Trim();
-            string args = raw.Length > exeIdx + 4 ? raw.Substring(exeIdx + 4).Trim() : string.Empty;
-            return (file, args);
+            int idx = raw.IndexOf(extractedExe, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+            {
+                int afterIdx = idx + extractedExe.Length;
+                if (afterIdx < raw.Length && raw[afterIdx] == '"') afterIdx++;
+                string args = afterIdx < raw.Length ? raw.Substring(afterIdx).Trim() : string.Empty;
+                return (extractedExe, args);
+            }
         }
 
         int firstSpace = raw.IndexOf(' ');
@@ -416,7 +426,7 @@ public class UninstallerRunner
 
     private static string InferSilentArguments(string fileName, string existingArgs)
     {
-        string lowerFile = fileName.ToLowerInvariant();
+        string lowerFile = Path.GetFileName(fileName).ToLowerInvariant();
         string lowerArgs = existingArgs.ToLowerInvariant();
 
         if (lowerFile.Contains("msiexec"))
@@ -428,7 +438,7 @@ public class UninstallerRunner
             return string.Empty;
         }
 
-        if (lowerFile.Contains("unins00") || lowerFile.Contains("unins.exe"))
+        if (lowerFile.StartsWith("unins00") || lowerFile.Equals("unins.exe"))
         {
             if (!lowerArgs.Contains("/verysilent") && !lowerArgs.Contains("/silent"))
             {
@@ -437,9 +447,9 @@ public class UninstallerRunner
             return string.Empty;
         }
 
-        if (lowerFile.Contains("uninstall.exe") || lowerFile.Contains("uninst.exe"))
+        if (lowerFile.Equals("uninstall.exe") || lowerFile.Equals("uninst.exe"))
         {
-            if (!lowerArgs.Contains("/s"))
+            if (!lowerArgs.Contains("/s") && !lowerArgs.Contains("--uninstall"))
             {
                 return "/S";
             }

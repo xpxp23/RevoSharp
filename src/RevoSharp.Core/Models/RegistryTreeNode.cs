@@ -23,22 +23,20 @@ public class RegistryTreeNode : INotifyPropertyChanged
         get => _isChecked;
         set
         {
-            if (_isChecked != value)
+            bool targetValue = value ?? false;
+            if (_isChecked != targetValue)
             {
-                _isChecked = value;
+                _isChecked = targetValue;
                 OnPropertyChanged(nameof(IsChecked));
 
-                if (value.HasValue)
+                if (AssociatedItem != null)
                 {
-                    if (AssociatedItem != null)
-                    {
-                        AssociatedItem.IsSelected = value.Value;
-                    }
+                    AssociatedItem.IsSelected = targetValue;
+                }
 
-                    foreach (var child in Children)
-                    {
-                        child.SetCheckedFromParent(value.Value);
-                    }
+                foreach (var child in Children)
+                {
+                    child.SetCheckedFromParent(targetValue);
                 }
 
                 Parent?.RecalculateCheckStateFromChildren();
@@ -79,6 +77,9 @@ public class RegistryTreeNode : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Pure read-only projection from ResidualItem.IsSelected onto TreeNode.IsChecked without mutating AssociatedItem.IsSelected.
+    /// </summary>
     public void SyncFromItemSelection()
     {
         foreach (var child in Children)
@@ -88,12 +89,27 @@ public class RegistryTreeNode : INotifyPropertyChanged
 
         if (Children.Count > 0)
         {
-            RecalculateCheckStateFromChildren(notifyParent: false);
+            bool allChildrenChecked = Children.All(c => c.IsChecked == true);
+            bool allChildrenUnchecked = Children.All(c => c.IsChecked == false);
+            bool? selfState = AssociatedItem?.IsSelected;
+
+            bool isAllTrue = allChildrenChecked && (selfState ?? true);
+            bool isAllFalse = allChildrenUnchecked && !(selfState ?? false);
+            bool? computed = isAllTrue ? true : (isAllFalse ? false : null);
+
+            if (_isChecked != computed)
+            {
+                _isChecked = computed;
+                OnPropertyChanged(nameof(IsChecked));
+            }
         }
         else if (AssociatedItem != null)
         {
-            _isChecked = AssociatedItem.IsSelected;
-            OnPropertyChanged(nameof(IsChecked));
+            if (_isChecked != AssociatedItem.IsSelected)
+            {
+                _isChecked = AssociatedItem.IsSelected;
+                OnPropertyChanged(nameof(IsChecked));
+            }
         }
     }
 
@@ -105,9 +121,10 @@ public class RegistryTreeNode : INotifyPropertyChanged
         bool allUnchecked = Children.All(c => c.IsChecked == false);
 
         bool? newState = allChecked ? true : (allUnchecked ? false : null);
-        if (AssociatedItem != null && newState.HasValue)
+
+        if (AssociatedItem != null)
         {
-            AssociatedItem.IsSelected = newState.Value;
+            AssociatedItem.IsSelected = newState == true;
         }
 
         if (_isChecked != newState)
@@ -120,6 +137,16 @@ public class RegistryTreeNode : INotifyPropertyChanged
             }
         }
     }
+
+    public string SymbolIconName => Category switch
+    {
+        ResidualCategory.Service => "Settings24",
+        ResidualCategory.FirewallRule => "Shield24",
+        ResidualCategory.ShellExtension => "Apps24",
+        ResidualCategory.MsiMetadata => "Box24",
+        ResidualCategory.RegistryValue => "Tag24",
+        _ => "Code24"
+    };
 
     public string IconGlyph => Category switch
     {

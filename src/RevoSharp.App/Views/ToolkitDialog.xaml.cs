@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
 using Microsoft.Win32;
 using RevoSharp.Core.Models;
 using RevoSharp.Core.Serialization;
@@ -14,6 +15,7 @@ public partial class ToolkitDialog
 {
     private readonly HunterService _hunterService = new();
     private readonly AppLocator _appLocator = new();
+    private List<AutostartEntry> _allAutostarts = [];
 
     public InstalledApp? AppToCleanFromLog { get; private set; }
 
@@ -31,16 +33,58 @@ public partial class ToolkitDialog
 
     private async Task LoadAllTabsAsync()
     {
-        AutostartGrid.ItemsSource = await Task.Run(() => _hunterService.GetAllAutostartEntries());
-        BackupGrid.ItemsSource = await RegistryBackup.GetBackupManifestsAsync();
-        TraceLogGrid.ItemsSource = await _appLocator.GetAllTraceLogsAsync();
-        StatusTextBlock.Text = "已加载系统自启动项、历史备份档案与安装监控日志。";
+        ToolkitLoadingRing.Visibility = Visibility.Visible;
+        StatusTextBlock.Text = "正在扫描系统开机自启动项、历史备份档案与安装监控日志...";
+        try
+        {
+            _allAutostarts = await Task.Run(() => _hunterService.GetAllAutostartEntries());
+            ApplyAutostartFilter();
+            BackupGrid.ItemsSource = await RegistryBackup.GetBackupManifestsAsync();
+            TraceLogGrid.ItemsSource = await _appLocator.GetAllTraceLogsAsync();
+            StatusTextBlock.Text = $"已加载 {_allAutostarts.Count} 项开机自启条目、历史备份档案与安装监控日志。";
+        }
+        finally
+        {
+            ToolkitLoadingRing.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void OnAutostartSearchChanged(object sender, TextChangedEventArgs e)
+    {
+        ApplyAutostartFilter();
+    }
+
+    private void ApplyAutostartFilter()
+    {
+        string kw = AutostartSearchBox?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrEmpty(kw))
+        {
+            AutostartGrid.ItemsSource = _allAutostarts;
+            return;
+        }
+
+        AutostartGrid.ItemsSource = _allAutostarts
+            .Where(a =>
+                a.Name.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                a.Command.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                a.Publisher.Contains(kw, StringComparison.OrdinalIgnoreCase) ||
+                a.LocationType.Contains(kw, StringComparison.OrdinalIgnoreCase))
+            .ToList();
     }
 
     private async void OnRefreshAutostartClick(object sender, RoutedEventArgs e)
     {
-        AutostartGrid.ItemsSource = await Task.Run(() => _hunterService.GetAllAutostartEntries());
-        StatusTextBlock.Text = "自启动项列表已刷新。";
+        ToolkitLoadingRing.Visibility = Visibility.Visible;
+        try
+        {
+            _allAutostarts = await Task.Run(() => _hunterService.GetAllAutostartEntries());
+            ApplyAutostartFilter();
+            StatusTextBlock.Text = $"自启动项列表已刷新（共 {_allAutostarts.Count} 项）。";
+        }
+        finally
+        {
+            ToolkitLoadingRing.Visibility = Visibility.Collapsed;
+        }
     }
 
     private async void OnToggleAutostartClick(object sender, RoutedEventArgs e)
@@ -49,13 +93,32 @@ public partial class ToolkitDialog
 
         bool ok = await _hunterService.ToggleAutostartEntryStateAsync(entry);
         StatusTextBlock.Text = ok
-            ? $"✅ 已将自启动项【{entry.Name}】切换为：{entry.StatusDisplay}"
-            : $"⚠️ 无法切换【{entry.Name}】的启用状态（RunOnce 一次性项不支持禁用，可直接备份移除）";
+            ? $"已将自启动项【{entry.Name}】切换为：{entry.StatusDisplay}"
+            : $"无法切换【{entry.Name}】的启用状态（RunOnce 一次性项不支持禁用，可直接备份移除）";
     }
 
     private void OnOpenAutostartLocationClick(object sender, RoutedEventArgs e)
     {
         if (AutostartGrid.SelectedItem is not AutostartEntry entry) return;
+
+        if (!entry.IsStartupShortcut && !entry.IsScheduledTask && !string.IsNullOrEmpty(entry.RegistrySubKey))
+        {
+            if (!string.IsNullOrEmpty(entry.ExecutablePath) && File.Exists(entry.ExecutablePath))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{entry.ExecutablePath}\"",
+                    UseShellExecute = true
+                });
+            }
+            else
+            {
+                RegistryBackup.OpenInRegEdit($@"{entry.RegistryHiveName}\{entry.RegistrySubKey}");
+            }
+            return;
+        }
+
         string target = (entry.IsStartupShortcut || entry.IsScheduledTask) ? entry.FullLocation : entry.ExecutablePath;
         if (!string.IsNullOrEmpty(target) && File.Exists(target))
         {
@@ -75,7 +138,7 @@ public partial class ToolkitDialog
         bool confirmed = FluentMessageDialog.ShowConfirm(
             this,
             "移除自启动项确认",
-            $"确定要安全备份并从系统中移除自启动项【{entry.Name}】吗？\n（移除后会自动在“多级备份还原中心”生成备份记录，可随时一键还原）",
+            $"确定要安全备份并从系统中移除自启动项【{entry.Name}】吗？\n（移除后会自动在“多级备份还原中心”生成完整备份记录，支持一键原位还原）",
             confirmText: "备份并移除",
             cancelText: "取消",
             isWarningOrDanger: true);
@@ -84,11 +147,30 @@ public partial class ToolkitDialog
 
         bool ok = await _hunterService.RemoveAutostartEntryAsync(entry);
         StatusTextBlock.Text = ok
-            ? $"✅ 已安全备份并移除自启动项：{entry.Name}（已同步记入多级备份还原中心）"
-            : $"⚠️ 移除自启动项失败（可能需要更高权限）：{entry.Name}";
+            ? $"已安全备份并移除自启动项：{entry.Name}（已同步记入多级备份还原中心）"
+            : $"移除自启动项失败（可能需要管理员权限）：{entry.Name}";
 
-        AutostartGrid.ItemsSource = await Task.Run(() => _hunterService.GetAllAutostartEntries());
+        _allAutostarts = await Task.Run(() => _hunterService.GetAllAutostartEntries());
+        ApplyAutostartFilter();
         BackupGrid.ItemsSource = await RegistryBackup.GetBackupManifestsAsync();
+    }
+
+    private void OnBackupSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (BackupGrid.SelectedItem is BackupManifest manifest)
+        {
+            if (manifest.BackedUpTargetDescriptions.Count > 0)
+            {
+                BackupPreviewTextBlock.Text = $"备份明细 ({manifest.BackedUpTargetDescriptions.Count} 项): " +
+                                              string.Join("  |  ", manifest.BackedUpTargetDescriptions.Take(6));
+                BackupPreviewTextBlock.ToolTip = manifest.DetailsTooltipText;
+            }
+            else
+            {
+                BackupPreviewTextBlock.Text = manifest.SummaryText;
+                BackupPreviewTextBlock.ToolTip = manifest.SummaryText;
+            }
+        }
     }
 
     private void OnOpenBackupFolderClick(object sender, RoutedEventArgs e)
@@ -108,10 +190,13 @@ public partial class ToolkitDialog
     private async void OnRestoreBackupClick(object sender, RoutedEventArgs e)
     {
         if (BackupGrid.SelectedItem is not BackupManifest manifest) return;
-        StatusTextBlock.Text = $"正在还原【{manifest.AppName}】的注册表与计划任务备份...";
+        StatusTextBlock.Text = $"正在还原【{manifest.AppName}】的注册表、计划任务与文件快照备份...";
         int count = await RegistryBackup.RestoreBackupManifestAsync(manifest);
-        StatusTextBlock.Text = $"✅ 已成功导入还原 {count} 份备份项（回收站文件可在系统回收站中直接还原）。";
-        AutostartGrid.ItemsSource = await Task.Run(() => _hunterService.GetAllAutostartEntries());
+        StatusTextBlock.Text = count > 0
+            ? $"已成功原位还原 {count} 份备份项（大型目录可在系统回收站中直接还原）。"
+            : "该档案未包含可直接导入的注册表/文件快照，请前往系统回收站还原对应目录。";
+        _allAutostarts = await Task.Run(() => _hunterService.GetAllAutostartEntries());
+        ApplyAutostartFilter();
     }
 
     private async void OnDeleteBackupClick(object sender, RoutedEventArgs e)
@@ -137,6 +222,13 @@ public partial class ToolkitDialog
             foreach (var xml in manifest.TaskXmlBackupFiles)
             {
                 if (File.Exists(xml)) File.Delete(xml);
+            }
+            if (manifest.FileBackupCopyMap != null)
+            {
+                foreach (var bakCopy in manifest.FileBackupCopyMap.Values)
+                {
+                    if (File.Exists(bakCopy)) File.Delete(bakCopy);
+                }
             }
             if (File.Exists(manifest.ManifestPath)) File.Delete(manifest.ManifestPath);
             BackupGrid.ItemsSource = await RegistryBackup.GetBackupManifestsAsync();
@@ -165,14 +257,14 @@ public partial class ToolkitDialog
                 var log = await TraceLogSerializer.LoadAsync(dlg.FileName);
                 if (log == null)
                 {
-                    StatusTextBlock.Text = "⚠️ 无法解析所选日志文件，格式可能已损坏。";
+                    StatusTextBlock.Text = "无法解析所选日志文件，格式可能已损坏。";
                     return;
                 }
 
                 string destPath = Path.Combine(AppLocator.LogDirectory, Path.GetFileName(dlg.FileName));
                 await TraceLogSerializer.SaveAsync(log, destPath);
                 TraceLogGrid.ItemsSource = await _appLocator.GetAllTraceLogsAsync();
-                StatusTextBlock.Text = $"✅ 已成功导入【{log.AppName}】的安装监控日志。";
+                StatusTextBlock.Text = $"已成功导入【{log.AppName}】的安装监控日志。";
             }
             catch (Exception ex)
             {
@@ -197,7 +289,7 @@ public partial class ToolkitDialog
             try
             {
                 await TraceLogSerializer.ExportReadableReportAsync(log, dlg.FileName);
-                StatusTextBlock.Text = $"✅ 已导出可读报告: {dlg.FileName}";
+                StatusTextBlock.Text = $"已导出可读报告: {dlg.FileName}";
             }
             catch (Exception ex)
             {

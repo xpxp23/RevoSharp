@@ -26,6 +26,8 @@
 
         <Border Grid.Row="1"
                 Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
                 Margin="16,4,16,12"
                 Padding="20,18"
                 CornerRadius="8">
@@ -39,13 +41,13 @@
                         Grid.Column="0"
                         Width="40" Height="40"
                         CornerRadius="20"
-                        Background="#280088FF"
+                        Background="#280078D4"
                         VerticalAlignment="Top"
                         Margin="0,0,14,0">
                     <ui:SymbolIcon x:Name="PromptSymbolIcon"
                                    Symbol="QuestionCircle24"
                                    FontSize="22"
-                                   Foreground="#66BBFF"
+                                   Foreground="#60CDFF"
                                    HorizontalAlignment="Center"
                                    VerticalAlignment="Center" />
                 </Border>

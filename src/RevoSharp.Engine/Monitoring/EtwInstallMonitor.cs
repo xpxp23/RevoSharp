@@ -33,11 +33,13 @@ public class EtwInstallMonitor : IDisposable
     private string _appName = string.Empty;
     private string _installerPath = string.Empty;
     private DateTime _monitorStartUtc;
-    private bool _isMonitoring;
+    private volatile bool _isMonitoring;
+    private volatile bool _installerLaunched;
 
     public bool IsMonitoring => _isMonitoring;
     public int CapturedFileCount { get { lock (_lock) return _createdFiles.Count; } }
     public int CapturedRegCount { get { lock (_lock) return _createdRegistryKeys.Count + _modifiedRegistryValues.Count; } }
+    public int TrackedProcessCount { get { lock (_lock) return _trackedPids.Count; } }
 
     public event Action<string>? OnItemCaptured;
 
@@ -46,6 +48,7 @@ public class EtwInstallMonitor : IDisposable
         _appName = appName;
         _installerPath = installerPath;
         _monitorStartUtc = DateTime.UtcNow;
+        _installerLaunched = false;
 
         lock (_lock)
         {
@@ -92,16 +95,30 @@ public class EtwInstallMonitor : IDisposable
                     );
                 }
 
-                // Track child installer processes AND msiexec service worker processes
+                // Track child installer processes AND msiexec service worker processes once installer is active
                 _session.Source.Kernel.ProcessStart += (ProcessTraceData data) =>
                 {
+                    if (!_installerLaunched) return;
+                    bool attachMsiWorkers = false;
                     lock (_lock)
                     {
-                        if (_trackedPids.Contains(data.ParentID) ||
-                            data.ImageFileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase))
+                        if (_trackedPids.Contains(data.ParentID))
+                        {
+                            _trackedPids.Add(data.ProcessID);
+                            if (data.ImageFileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase))
+                            {
+                                attachMsiWorkers = true;
+                            }
+                        }
+                        else if (data.ImageFileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) && _trackedPids.Count > 0)
                         {
                             _trackedPids.Add(data.ProcessID);
                         }
+                    }
+
+                    if (attachMsiWorkers)
+                    {
+                        AttachRunningMsiExecProcesses();
                     }
                 };
 
@@ -199,22 +216,75 @@ public class EtwInstallMonitor : IDisposable
 
         await sessionReadyTcs.Task;
 
-        // 2. Launch the installer process AFTER ETW is actively listening
-        var psi = new ProcessStartInfo
+        // 2. Launch the installer process AFTER ETW is actively listening.
+        // Explicitly wrap .msi/.msp packages with msiexec.exe /i so Verb="runas" never fails on .msi files
+        // and pre-existing msiserver worker processes are tracked accurately.
+        try
         {
-            FileName = installerPath,
-            UseShellExecute = true,
-            Verb = "runas"
-        };
+            bool isMsiPackage = installerPath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ||
+                                installerPath.EndsWith(".msp", StringComparison.OrdinalIgnoreCase);
 
-        _installerProcess = Process.Start(psi) ?? throw new InvalidOperationException("无法启动安装程序");
-        lock (_lock)
+            var psi = isMsiPackage
+                ? new ProcessStartInfo
+                {
+                    FileName = "msiexec.exe",
+                    Arguments = $"/i \"{installerPath}\"",
+                    UseShellExecute = true,
+                    Verb = "runas"
+                }
+                : new ProcessStartInfo
+                {
+                    FileName = installerPath,
+                    UseShellExecute = true,
+                    Verb = "runas"
+                };
+
+            _installerProcess = Process.Start(psi) ?? throw new InvalidOperationException("无法启动安装程序");
+            lock (_lock)
+            {
+                _trackedPids.Add(_installerProcess.Id);
+            }
+            _installerLaunched = true;
+
+            if (isMsiPackage)
+            {
+                AttachRunningMsiExecProcesses();
+            }
+        }
+        catch
         {
-            _trackedPids.Add(_installerProcess.Id);
+            Dispose();
+            throw;
         }
 
         _isMonitoring = true;
         await etwTask;
+    }
+
+    /// <summary>
+    /// Attaches any active msiexec.exe (Windows Installer service worker) processes to _trackedPids
+    /// so MSI packages unpacked by an already-running msiserver service are captured completely.
+    /// </summary>
+    private void AttachRunningMsiExecProcesses()
+    {
+        try
+        {
+            foreach (var proc in Process.GetProcessesByName("msiexec"))
+            {
+                try
+                {
+                    lock (_lock)
+                    {
+                        _trackedPids.Add(proc.Id);
+                    }
+                }
+                finally
+                {
+                    proc.Dispose();
+                }
+            }
+        }
+        catch { }
     }
 
     /// <summary>
@@ -308,6 +378,7 @@ public class EtwInstallMonitor : IDisposable
     public async Task<TraceLog> StopAsync()
     {
         _isMonitoring = false;
+        _installerLaunched = false;
 
         try
         {
@@ -556,6 +627,7 @@ public class EtwInstallMonitor : IDisposable
     public void Dispose()
     {
         _isMonitoring = false;
+        _installerLaunched = false;
         try
         {
             _session?.Stop();

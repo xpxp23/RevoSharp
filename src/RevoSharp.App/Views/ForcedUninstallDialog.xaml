@@ -2,9 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-        Title="强制卸载与未知残留猎杀向导 (Forced Uninstall)"
-        Height="430" Width="680"
+        Title="强制卸载与未知残留猎杀向导"
+        Height="440" Width="680"
         ResizeMode="NoResize"
+        AllowDrop="True"
+        DragOver="OnDialogDragOver"
+        Drop="OnDialogFileDrop"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -17,14 +20,26 @@
         </Grid.RowDefinitions>
 
         <ui:TitleBar Grid.Row="0"
-                     Title="强制卸载向导 (针对已卸载残留、损坏安装或未登记软件)"
+                     Title="强制卸载向导"
                      ShowMaximize="False"
                      ShowMinimize="False"
-                     Icon="{ui:SymbolIcon Wrench24}" />
+                     Icon="{ui:SymbolIcon Wrench24}">
+            <ui:TitleBar.Header>
+                <TextBlock Text="支持直接拖入残留快捷方式 (.lnk)、可执行程序或目录"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
+            </ui:TitleBar.Header>
+        </ui:TitleBar>
 
-        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,12" Padding="20" CornerRadius="8">
+        <Border Grid.Row="1"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                Margin="16,0,16,12"
+                Padding="20"
+                CornerRadius="8">
             <StackPanel>
-                <TextBlock Text="当某款软件已通过常规方式卸载但仍有大量残留，或未出现在系统安装列表中时，请输入其软件名称或指定残留路径进行深度逆向扫描："
+                <TextBlock Text="当某款软件已通过常规方式卸载但仍有遗留残余，或未出现在系统安装列表中时，请输入软件名称或指定残留路径（也可直接将文件/快捷方式拖入本窗口）发起深度逆向扫描："
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                            TextWrapping="Wrap"
                            FontSize="12"
@@ -32,7 +47,7 @@
 
                 <TextBlock Text="1. 目标软件或进程精确名称 (必填)：" FontWeight="SemiBold" Margin="0,0,0,6" />
                 <ui:TextBox x:Name="AppNameTextBox"
-                            PlaceholderText="例如：Adobe Reader、WeChat、某流氓弹窗名称..."
+                            PlaceholderText="例如：Adobe Reader、WeChat、某残留组件名称..."
                             Margin="0,0,0,14" />
 
                 <TextBlock Text="2. 关联残留目录或主程序路径 (可选，推荐填写以激活逆向引用扫描)：" FontWeight="SemiBold" Margin="0,0,0,6" />
@@ -44,7 +59,7 @@
                     </Grid.ColumnDefinitions>
                     <ui:TextBox x:Name="TargetPathTextBox"
                                 Grid.Column="0"
-                                PlaceholderText="可粘贴旧安装目录路径，或点击右侧定位..."
+                                PlaceholderText="可粘贴或拖入旧安装目录、程序文件或 .lnk 快捷方式..."
                                 Margin="0,0,8,0" />
                     <ui:Button Grid.Column="1"
                                Content="选文件..."
@@ -76,7 +91,7 @@
         <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" Padding="16,12">
             <Grid>
                 <TextBlock x:Name="HintTextBlock"
-                           Text="提示：支持自动保护桌面、下载与系统核心目录，防止误伤共享文件夹。"
+                           Text="提示：内置桌面、下载与系统核心目录护栏，自动防止误删共享文件夹。"
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                            FontSize="12" />

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Microsoft.Win32;
 using RevoSharp.App.ViewModels;
 using RevoSharp.Core.Models;
@@ -27,6 +28,8 @@ public partial class HunterTargetWindow : Window
     private bool _isRightDragging;
     private bool _isClickThroughApplied;
     private Point _dragStartPoint;
+    private double _parkedLeft;
+    private double _parkedTop;
     private POINT _rightDragStartScreenPt;
     private double _rightDragStartLeft;
     private double _rightDragStartTop;
@@ -76,13 +79,23 @@ public partial class HunterTargetWindow : Window
         double screenW = SystemParameters.WorkArea.Width;
         Left = screenW - 130;
         Top = 60;
+        _parkedLeft = Left;
+        _parkedTop = Top;
 
         Loaded += (s, e) =>
         {
             var helper = new WindowInteropHelper(this);
             int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
             SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+            Focus();
         };
+    }
+
+    private Point ScreenPhysicalToLogical(int physicalX, int physicalY)
+    {
+        var source = PresentationSource.FromVisual(this);
+        Matrix transform = source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        return transform.Transform(new Point(physicalX, physicalY));
     }
 
     private void SetClickThrough(bool enable)
@@ -103,6 +116,36 @@ public partial class HunterTargetWindow : Window
         _isClickThroughApplied = enable;
     }
 
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+        if (e.Key == Key.Escape)
+        {
+            if (_isAiming)
+            {
+                CancelActiveAiming();
+            }
+            else
+            {
+                RestoreMainWindow();
+            }
+            e.Handled = true;
+        }
+    }
+
+    private void CancelActiveAiming()
+    {
+        _isAiming = false;
+        _lastInspectedHwnd = IntPtr.Zero;
+        _currentTarget = null;
+        SetClickThrough(false);
+        ReleaseMouseCapture();
+        Cursor = Cursors.Hand;
+        _overlay.Hide();
+        Left = _parkedLeft;
+        Top = _parkedTop;
+    }
+
     protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseLeftButtonDown(e);
@@ -111,10 +154,14 @@ public partial class HunterTargetWindow : Window
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
         {
             DragMove();
+            _parkedLeft = Left;
+            _parkedTop = Top;
             e.Handled = true;
             return;
         }
 
+        _parkedLeft = Left;
+        _parkedTop = Top;
         _isAiming = true;
         _currentTarget = null;
         _lastInspectedHwnd = IntPtr.Zero;
@@ -139,7 +186,7 @@ public partial class HunterTargetWindow : Window
     {
         base.OnPreviewMouseMove(e);
 
-        // 1. Handle Right-Button Drag to reposition reticle smoothly (matching ToolTip!)
+        // 1. Handle Right-Button Drag to reposition reticle smoothly
         if (_isRightButtonDown && e.RightButton == MouseButtonState.Pressed)
         {
             GetCursorPos(out POINT rPt);
@@ -149,11 +196,12 @@ public partial class HunterTargetWindow : Window
             if (_isRightDragging || Math.Sqrt(dxPhysical * dxPhysical + dyPhysical * dyPhysical) > 5)
             {
                 _isRightDragging = true;
-                var source = PresentationSource.FromVisual(this);
-                double dpiX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
-                double dpiY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
-                Left = _rightDragStartLeft + (dxPhysical / dpiX);
-                Top = _rightDragStartTop + (dyPhysical / dpiY);
+                var startLogical = ScreenPhysicalToLogical(_rightDragStartScreenPt.X, _rightDragStartScreenPt.Y);
+                var currentLogical = ScreenPhysicalToLogical(rPt.X, rPt.Y);
+                Left = _rightDragStartLeft + (currentLogical.X - startLogical.X);
+                Top = _rightDragStartTop + (currentLogical.Y - startLogical.Y);
+                _parkedLeft = Left;
+                _parkedTop = Top;
             }
             return;
         }
@@ -175,8 +223,6 @@ public partial class HunterTargetWindow : Window
 
             if (candidateHwnd != IntPtr.Zero && candidateHwnd != thisHwnd && candidateHwnd != overlayHwnd)
             {
-                // Only run process/version inspection when the cursor crosses into a DIFFERENT window handle!
-                // Defer expensive COM/Registry autostart scan until MouseLeftButtonUp!
                 if (candidateHwnd != _lastInspectedHwnd)
                 {
                     _lastInspectedHwnd = candidateHwnd;
@@ -196,11 +242,9 @@ public partial class HunterTargetWindow : Window
                 _overlay.Hide();
             }
 
-            var source = PresentationSource.FromVisual(this);
-            double dpiX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
-            double dpiY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
-            Left = (pt.X / dpiX) - 48;
-            Top = (pt.Y / dpiY) - 48;
+            var logicalPt = ScreenPhysicalToLogical(pt.X, pt.Y);
+            Left = logicalPt.X - 48;
+            Top = logicalPt.Y - 48;
         }
     }
 
@@ -234,9 +278,12 @@ public partial class HunterTargetWindow : Window
         Cursor = Cursors.Hand;
         _overlay.Hide();
 
+        // Return reticle to its parked corner so it never obstructs the target window or HUD!
+        Left = _parkedLeft;
+        Top = _parkedTop;
+
         if (_currentTarget != null)
         {
-            // Perform deep autostart persistence scan once upon target lock-on
             if (!_currentTarget.IsSystemCritical)
             {
                 _hunterService.ScanAutostartPersistence(_currentTarget);

@@ -82,6 +82,9 @@ public class InstalledApp : INotifyPropertyChanged
     }
 
     public string PublisherDisplay => string.IsNullOrWhiteSpace(Publisher) ? "未知发行商" : Publisher;
+    public string VersionDisplay => string.IsNullOrWhiteSpace(DisplayVersion) ? "--" : DisplayVersion;
+    public string InstallDateDisplay => string.IsNullOrWhiteSpace(InstallDate) ? "--" : InstallDate;
+    public string InstallLocationDisplay => string.IsNullOrWhiteSpace(InstallLocation) ? "未记录独立目录 (系统路径或注册表项)" : InstallLocation;
 
     public string FormattedSize
     {

@@ -28,7 +28,9 @@ public static class ProfileBuilder
         "crashhandler.exe", "crashhandler64.exe", "helper.exe", "service.exe", "daemon.exe",
         "agent.exe", "cli.exe", "console.exe", "python.exe", "pythonw.exe", "java.exe",
         "javaw.exe", "node.exe", "cmd.exe", "powershell.exe", "rundll32.exe", "msiexec.exe",
-        "vcredist_x86.exe", "vcredist_x64.exe", "dxsetup.exe", "7z.exe", "curl.exe", "git.exe"
+        "vcredist_x86.exe", "vcredist_x64.exe", "dxsetup.exe", "7z.exe", "curl.exe", "git.exe",
+        "config.exe", "settings.exe", "server.exe", "client.exe", "plugin.exe", "host.exe",
+        "elevate.exe", "webview2.exe", "cefsharp.browsersubprocess.exe"
     };
 
     public static TargetProfile Build(InstalledApp app)
@@ -132,10 +134,9 @@ public static class ProfileBuilder
     private static void ExtractExeName(string text, HashSet<string> set)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
-        int exeIdx = text.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
-        if (exeIdx > 0)
+        string candidate = AppLocator.ExtractExeFromCommand(text);
+        if (!string.IsNullOrEmpty(candidate))
         {
-            string candidate = text.Substring(0, exeIdx + 4).Trim('"', ' ', '\'');
             string fileName = Path.GetFileName(candidate);
             if (!IsExcludedExeName(fileName))
             {

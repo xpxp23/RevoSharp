@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
+using RevoSharp.Engine.Discovery;
 using RevoSharp.Engine.Safety;
 
 namespace RevoSharp.Engine.Scanning;
@@ -170,9 +171,10 @@ public class ReverseReferenceScanner
                         string? defaultVal = singleAp.GetValue(string.Empty) as string;
                         string? pathVal = singleAp.GetValue("Path") as string;
 
-                        if (profile.MainExeNames.Contains(exeName) ||
-                            IsPathMatching(defaultVal, profile) ||
-                            IsPathMatching(pathVal, profile))
+                        bool pathMatched = IsPathMatching(defaultVal, profile) || IsPathMatching(pathVal, profile);
+                        bool exeMatched = !profile.HasValidLocation && profile.MainExeNames.Contains(exeName);
+
+                        if (pathMatched || exeMatched)
                         {
                             string fullKey = hivePrefix.StartsWith("HKLM\\SOFTWARE\\WOW6432Node")
                                 ? $@"{hivePrefix}\{exeName}"
@@ -432,8 +434,9 @@ public class ReverseReferenceScanner
     private static bool IsPathMatching(string? text, TargetProfile profile)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
-        string lower = text.ToLowerInvariant();
+        string lower = Environment.ExpandEnvironmentVariables(text).ToLowerInvariant();
 
+        // 1. Primary path prefix check when the target app has a known installation directory
         if (profile.HasValidLocation)
         {
             string locWithSlash = profile.NormalizedLocation.TrimEnd('\\') + "\\";
@@ -446,15 +449,36 @@ public class ReverseReferenceScanner
                 if (lower.Contains(shortWithSlash) || lower.EndsWith(profile.ShortLocation))
                     return true;
             }
+
+            // Critical safety guard: When the app HAS a known InstallLocation, do NOT match full paths
+            // pointing to a completely different existing directory on disk just because the .exe filename is similar!
+            return false;
         }
 
+        if (!string.IsNullOrEmpty(profile.SingleExecutableFile) &&
+            lower.Contains(profile.SingleExecutableFile.ToLowerInvariant()))
+        {
+            return true;
+        }
+
+        // 2. Fallback for apps without a recorded InstallLocation: match distinctive MainExeNames
+        // only if the referenced executable path does NOT still exist inside another intact application folder.
         foreach (var exe in profile.MainExeNames)
         {
             string exeLower = exe.ToLowerInvariant();
+            if (exeLower.Length < 8) continue; // e.g. at least 4 chars before .exe
+
             if (lower.Contains("\\" + exeLower) || lower.Equals(exeLower))
             {
                 if (lower.Contains(@"\windows\") || lower.Contains(@"\system32\") || lower.Contains(@"\syswow64\"))
                     continue;
+
+                string extractedExe = AppLocator.ExtractExeFromCommand(text);
+                if (!string.IsNullOrEmpty(extractedExe) && File.Exists(extractedExe))
+                {
+                    // If the binary still exists in some other valid installation directory, do not treat it as an orphaned dead link
+                    continue;
+                }
                 return true;
             }
         }

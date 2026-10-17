@@ -19,6 +19,51 @@ public partial class ForcedUninstallDialog
         InitializeComponent();
     }
 
+    private void OnDialogDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+            ? DragDropEffects.Link
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnDialogFileDrop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] paths && paths.Length > 0)
+        {
+            ApplySelectedTargetPath(paths[0]);
+        }
+    }
+
+    private void ApplySelectedTargetPath(string selectedPath)
+    {
+        if (string.IsNullOrWhiteSpace(selectedPath)) return;
+
+        if (selectedPath.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            string? resolved = HunterService.ResolveShortcutTarget(selectedPath);
+            if (!string.IsNullOrEmpty(resolved) && (File.Exists(resolved) || Directory.Exists(resolved)))
+            {
+                selectedPath = resolved;
+                HintTextBlock.Text = $"已自动解析快捷方式指向的真实路径: {selectedPath}";
+            }
+        }
+
+        TargetPathTextBox.Text = selectedPath;
+        if (string.IsNullOrWhiteSpace(AppNameTextBox.Text))
+        {
+            if (Directory.Exists(selectedPath))
+            {
+                AppNameTextBox.Text = Path.GetFileName(selectedPath.TrimEnd('\\', '/'));
+            }
+            else
+            {
+                AppNameTextBox.Text = TryExtractProductName(selectedPath);
+            }
+        }
+    }
+
     private void OnBrowseFileClick(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog
@@ -28,23 +73,7 @@ public partial class ForcedUninstallDialog
         };
         if (dlg.ShowDialog() == true)
         {
-            string selectedFile = dlg.FileName;
-            // Automatically resolve .lnk shortcut target so Forced Uninstall locates the real installation directory!
-            if (selectedFile.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
-            {
-                string? resolved = HunterService.ResolveShortcutTarget(selectedFile);
-                if (!string.IsNullOrEmpty(resolved) && (File.Exists(resolved) || Directory.Exists(resolved)))
-                {
-                    selectedFile = resolved;
-                    HintTextBlock.Text = $"🔗 已自动解析快捷方式指向的真实路径: {selectedFile}";
-                }
-            }
-
-            TargetPathTextBox.Text = selectedFile;
-            if (string.IsNullOrWhiteSpace(AppNameTextBox.Text))
-            {
-                AppNameTextBox.Text = TryExtractProductName(selectedFile);
-            }
+            ApplySelectedTargetPath(dlg.FileName);
         }
     }
 
@@ -56,11 +85,7 @@ public partial class ForcedUninstallDialog
         };
         if (dlg.ShowDialog() == true)
         {
-            TargetPathTextBox.Text = dlg.FolderName;
-            if (string.IsNullOrWhiteSpace(AppNameTextBox.Text))
-            {
-                AppNameTextBox.Text = Path.GetFileName(dlg.FolderName.TrimEnd('\\', '/'));
-            }
+            ApplySelectedTargetPath(dlg.FolderName);
         }
     }
 
@@ -98,13 +123,15 @@ public partial class ForcedUninstallDialog
 
         if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(path))
         {
-            HintTextBlock.Text = "⚠️ 请至少输入目标软件名称或指定一个残留路径！";
+            HintTextBlock.Text = "请至少输入目标软件名称或指定一个残留路径。";
             return;
         }
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            name = TryExtractProductName(path);
+            name = Directory.Exists(path)
+                ? Path.GetFileName(path.TrimEnd('\\', '/'))
+                : TryExtractProductName(path);
         }
 
         string installDir = string.Empty;
@@ -142,7 +169,7 @@ public partial class ForcedUninstallDialog
                 }
                 else
                 {
-                    HintTextBlock.Text = "⚠️ 所选目录为系统或用户共享根目录，已仅按名称执行安全扫描。";
+                    HintTextBlock.Text = "所选目录为系统或用户共享根目录，已仅按名称执行安全扫描。";
                 }
             }
         }

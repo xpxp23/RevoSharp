@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
 using RevoSharp.App.ViewModels;
 
 namespace RevoSharp.App.Views.Hunter;
@@ -44,19 +46,26 @@ public partial class HunterActionHud : Window
         InitializeComponent();
         DataContext = viewModel;
         viewModel.RequestCloseAction = Close;
-        MouseLeftButtonDown += (s, e) => { if (e.ButtonState == System.Windows.Input.MouseButtonState.Pressed) DragMove(); };
+        MouseLeftButtonDown += (s, e) => { if (e.ButtonState == MouseButtonState.Pressed) DragMove(); };
+        PreviewKeyDown += (s, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                Close();
+                e.Handled = true;
+            }
+        };
     }
 
     public void PositionNear(Point screenPoint)
     {
         var source = PresentationSource.FromVisual(this);
-        double dpiX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
-        double dpiY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
+        Matrix transform = source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
 
-        double workLeft = 0;
-        double workTop = 0;
-        double workRight = SystemParameters.WorkArea.Width;
-        double workBottom = SystemParameters.WorkArea.Height;
+        double workLeft = SystemParameters.WorkArea.Left;
+        double workTop = SystemParameters.WorkArea.Top;
+        double workRight = SystemParameters.WorkArea.Right;
+        double workBottom = SystemParameters.WorkArea.Bottom;
 
         var pt = new POINT { X = (int)screenPoint.X, Y = (int)screenPoint.Y };
         IntPtr hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
@@ -65,26 +74,29 @@ public partial class HunterActionHud : Window
             var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
             if (GetMonitorInfo(hMon, ref mi))
             {
-                workLeft = mi.rcWork.Left / dpiX;
-                workTop = mi.rcWork.Top / dpiY;
-                workRight = mi.rcWork.Right / dpiX;
-                workBottom = mi.rcWork.Bottom / dpiY;
+                var topLeft = transform.Transform(new Point(mi.rcWork.Left, mi.rcWork.Top));
+                var bottomRight = transform.Transform(new Point(mi.rcWork.Right, mi.rcWork.Bottom));
+                workLeft = topLeft.X;
+                workTop = topLeft.Y;
+                workRight = bottomRight.X;
+                workBottom = bottomRight.Y;
             }
         }
 
         const double hudWidth = 560;
         const double hudHeight = 400;
 
-        double targetX = screenPoint.X / dpiX + 16;
-        double targetY = screenPoint.Y / dpiY + 16;
+        var logicalCursor = transform.Transform(screenPoint);
+        double targetX = logicalCursor.X + 16;
+        double targetY = logicalCursor.Y + 16;
 
         if (targetX + hudWidth > workRight)
         {
-            targetX = screenPoint.X / dpiX - hudWidth;
+            targetX = logicalCursor.X - hudWidth;
         }
         if (targetY + hudHeight > workBottom)
         {
-            targetY = screenPoint.Y / dpiY - hudHeight;
+            targetY = logicalCursor.Y - hudHeight;
         }
 
         Left = Math.Clamp(targetX, workLeft + 8, Math.Max(workLeft + 8, workRight - hudWidth));

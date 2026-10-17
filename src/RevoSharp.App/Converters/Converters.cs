@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using RevoSharp.Core.Models;
 using RevoSharp.Engine.Discovery;
+using Wpf.Ui.Controls;
 
 namespace RevoSharp.App.Converters;
 
@@ -53,6 +54,20 @@ public class NullToBoolConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
 }
 
+public class NullToVisibilityConverter : IValueConverter
+{
+    public bool Invert { get; set; }
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        bool isNotNull = value != null && (value is not string s || !string.IsNullOrWhiteSpace(s));
+        if (Invert) isNotNull = !isNotNull;
+        return isNotNull ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
+}
+
 public class CountToVisibilityConverter : IValueConverter
 {
     public bool Invert { get; set; }
@@ -63,6 +78,20 @@ public class CountToVisibilityConverter : IValueConverter
         bool hasItems = count > 0;
         if (Invert) hasItems = !hasItems;
         return hasItems ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
+}
+
+public class StringToSymbolRegularConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is string iconName && Enum.TryParse<SymbolRegular>(iconName, ignoreCase: true, out var parsed))
+        {
+            return parsed;
+        }
+        return SymbolRegular.Document24;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
@@ -154,7 +183,7 @@ public class AppIconConverter : IValueConverter
 
     private static (string FilePath, int IconIndex) ParseIconLocation(string rawIcon)
     {
-        string trimmed = rawIcon.Trim().Trim('"', '\'');
+        string trimmed = Environment.ExpandEnvironmentVariables(rawIcon.Trim().Trim('"', '\''));
         int iconIndex = 0;
         int comma = trimmed.LastIndexOf(',');
         if (comma > 0)

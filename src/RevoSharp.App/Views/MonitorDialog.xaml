@@ -8,8 +8,8 @@
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
         Title="实时安装监控向导"
-        Height="620" Width="860"
-        MinHeight="480" MinWidth="680"
+        Height="660" Width="920"
+        MinHeight="500" MinWidth="720"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -34,25 +34,39 @@
 
         <!-- 1. TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="实时安装监控向导 (ETW 内核级追踪 + KCB 注册表键/值差分)"
-                     ShowMaximize="False"
+                     Title="实时安装监控向导"
+                     ShowMaximize="True"
                      ShowMinimize="False"
-                     Icon="{ui:SymbolIcon Record24}" />
+                     Icon="{ui:SymbolIcon Record24}">
+            <ui:TitleBar.Header>
+                <TextBlock Text="ETW 内核追踪 · MSI 服务关联 · KCB 注册表路径还原"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
+            </ui:TitleBar.Header>
+        </ui:TitleBar>
 
         <!-- 2. Configuration Card -->
-        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,12" Padding="16,12" CornerRadius="8">
+        <Border Grid.Row="1"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                Margin="16,0,16,10"
+                Padding="16,12"
+                CornerRadius="8">
             <StackPanel>
                 <Grid Margin="0,0,0,8">
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="120" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <ui:TextBox Grid.Column="0"
-                                PlaceholderText="请选择或粘贴安装包路径 (.exe / .msi)..."
+                    <TextBlock Grid.Column="0" Text="安装包路径：" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                    <ui:TextBox Grid.Column="1"
+                                PlaceholderText="请选择或粘贴安装包路径 (.exe / .msi / .msp)..."
                                 Text="{Binding InstallerPath, UpdateSourceTrigger=PropertyChanged}"
                                 IsEnabled="{Binding IsMonitoring, Converter={StaticResource InvBool}}"
                                 Margin="0,0,8,0" />
-                    <ui:Button Grid.Column="1"
+                    <ui:Button Grid.Column="2"
                                Content="浏览安装包..."
                                Icon="{ui:SymbolIcon FolderOpen24}"
                                Command="{Binding BrowseInstallerCommand}"
@@ -61,7 +75,7 @@
 
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="130" />
+                        <ColumnDefinition Width="120" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="程序识别名称：" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
@@ -73,37 +87,115 @@
             </StackPanel>
         </Border>
 
-        <!-- 3. Monitoring Real-Time Console -->
-        <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Margin="16,0,16,12" CornerRadius="8" Padding="16">
+        <!-- 3. Monitoring Real-Time Console & Metric Cards -->
+        <Border Grid.Row="2"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                Margin="16,0,16,10"
+                CornerRadius="8"
+                Padding="16,14">
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <!-- Statistics Bar -->
+                <!-- 4 Live Telemetry Cards -->
                 <Grid Grid.Row="0" Margin="0,0,0,12">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="已捕获新建/写入文件：" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <ui:Badge Content="{Binding CapturedFiles}" Appearance="Primary" Margin="6,0,24,0" />
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-                        <TextBlock Text="已捕获注册表键/值变更：" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <ui:Badge Content="{Binding CapturedRegistry}" Appearance="Success" Margin="6,0,0,0" />
+                    <Border Grid.Column="0" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8" Margin="0,0,8,0">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Document24" FontSize="20" Foreground="#60CDFF" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <StackPanel>
+                                <TextBlock Text="新建/写入文件" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding CapturedFiles}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="1" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8" Margin="0,0,8,0">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Code24" FontSize="20" Foreground="#6CCB5F" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <StackPanel>
+                                <TextBlock Text="注册表键/值变更" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding CapturedRegistry}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="2" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8" Margin="0,0,8,0">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Apps24" FontSize="20" Foreground="#C395FF" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <StackPanel>
+                                <TextBlock Text="追踪进程树节点" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding TrackedProcesses}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="3" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="6" Padding="12,8">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Clock24" FontSize="20" Foreground="#FCE100" VerticalAlignment="Center" Margin="0,0,10,0" />
+                            <StackPanel>
+                                <TextBlock Text="监控持续时间" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding ElapsedTimeDisplay}" FontSize="17" FontWeight="Bold" FontFamily="Consolas, Microsoft YaHei UI" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- Stream Filter & Control Bar -->
+                <Grid Grid.Row="1" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="260" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <ui:TextBox Grid.Column="0"
+                                PlaceholderText="过滤实时捕获路径或键名..."
+                                Text="{Binding EventFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                Icon="{ui:SymbolIcon Search24}"
+                                ClearButtonEnabled="True"
+                                FontSize="12" />
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0"
+                                Visibility="{Binding IsMonitoring, Converter={StaticResource BoolToVis}}">
+                        <ui:ProgressRing Width="16" Height="16" IsIndeterminate="True" Margin="0,0,8,0" />
+                        <TextBlock Text="ETW 内核监听运行中（支持 180ms 批量节流刷新，零 UI 阻塞）"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   VerticalAlignment="Center"
+                                   FontSize="12" />
                     </StackPanel>
 
-                    <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Visibility="{Binding IsMonitoring, Converter={StaticResource BoolToVis}}">
-                        <ui:ProgressRing Width="18" Height="18" IsIndeterminate="True" Margin="0,0,8,0" />
-                        <TextBlock Text="ETW 内核监听中 (含 msiexec 服务与 KCB 句柄追踪)..." Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" FontSize="12" />
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <ui:Button Content="{Binding PauseStreamButtonText}"
+                                   Command="{Binding TogglePauseStreamCommand}"
+                                   FontSize="12"
+                                   Padding="10,4"
+                                   Margin="0,0,6,0" />
+                        <ui:Button Content="清空画面"
+                                   Command="{Binding ClearEventsCommand}"
+                                   FontSize="12"
+                                   Padding="10,4" />
                     </StackPanel>
                 </Grid>
 
                 <!-- Live Events List -->
-                <ListBox Grid.Row="1"
+                <ListBox Grid.Row="2"
                          ItemsSource="{Binding RecentEvents}"
                          Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}"
                          BorderThickness="0"
-                         FontFamily="Consolas, Cascadia Code, Courier New"
-                         FontSize="11" />
+                         FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
+                         FontSize="11.5" />
             </Grid>
         </Border>
 

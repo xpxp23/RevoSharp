@@ -71,7 +71,14 @@ public partial class ResidualReviewWindow
 
     private async void OnCleanAllClick(object sender, RoutedEventArgs e)
     {
-        int lowConfCount = ViewModel.DisplayedResiduals.Count(r => r.IsSelected && r.Confidence == ConfidenceLevel.Low);
+        if (ViewModel.GetTotalSelectedCount() == 0)
+        {
+            ViewModel.StatusMessage = "请先勾选至少一项需要清理的残留条目，或点击“放弃并关闭”。";
+            return;
+        }
+
+        // Always evaluate low-confidence count across the entire unfiltered list so active category/search filters never bypass confirmation
+        int lowConfCount = ViewModel.GetSelectedLowConfidenceCount();
         if (lowConfCount > 0)
         {
             bool confirmed = FluentMessageDialog.ShowConfirm(

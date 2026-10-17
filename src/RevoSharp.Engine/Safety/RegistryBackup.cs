@@ -20,7 +20,7 @@ public static class RegistryBackup
 
     /// <summary>
     /// Exports the target registry key to a uniquely named .reg file before deletion,
-    /// honoring 64-bit / 32-bit registry views accurately.
+    /// honoring 64-bit / 32-bit registry views accurately without double-redirecting WOW6432Node paths.
     /// </summary>
     public static async Task<string?> ExportKeyAsync(string fullRegistryPath, string appName, bool? is64BitView = null)
     {
@@ -38,12 +38,12 @@ public static class RegistryBackup
                 string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
                 string backupPath = Path.Combine(BackupDir, $"{safeAppName}_{timestamp}_{seq:D3}.reg");
 
-                string regViewArg = is64BitView switch
-                {
-                    false => " /reg:32",
-                    true => " /reg:64",
-                    null => fullRegistryPath.Contains(@"\WOW6432Node\", StringComparison.OrdinalIgnoreCase) ? " /reg:64" : " /reg:64"
-                };
+                // Critical fix: If the path already explicitly contains \WOW6432Node\, passing /reg:32 causes reg.exe
+                // to double-redirect to WOW6432Node\WOW6432Node and fail. Always use /reg:64 when WOW6432Node is explicit!
+                bool hasExplicitWow64 = fullRegistryPath.Contains(@"\WOW6432Node\", StringComparison.OrdinalIgnoreCase);
+                string regViewArg = hasExplicitWow64
+                    ? " /reg:64"
+                    : (is64BitView == false ? " /reg:32" : " /reg:64");
 
                 var psi = new ProcessStartInfo
                 {
@@ -91,7 +91,7 @@ public static class RegistryBackup
                 string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
                 string backupPath = Path.Combine(BackupDir, $"{safeAppName}_val_{timestamp}_{seq:D3}.reg");
 
-                string fullHeaderKey = ExpandHivePrefix(fullKeyPath);
+                string fullHeaderKey = ExpandHivePrefixForExport(fullKeyPath, is64BitView);
                 string formattedValueLine = ReadAndFormatRegistryValueLine(fullKeyPath, valueName, fallbackValueData, is64BitView);
 
                 var sb = new StringBuilder();
@@ -108,6 +108,26 @@ public static class RegistryBackup
                 return null;
             }
         });
+    }
+
+    /// <summary>
+    /// Expands short hive names (HKLM/HKCU/HKCR) and injects WOW6432Node if a 32-bit view is specified
+    /// on an HKLM\SOFTWARE key that does not already include WOW6432Node.
+    /// </summary>
+    private static string ExpandHivePrefixForExport(string fullKeyPath, bool? is64BitView)
+    {
+        string expanded = ExpandHivePrefix(fullKeyPath);
+        if (is64BitView == false &&
+            Environment.Is64BitOperatingSystem &&
+            !expanded.Contains(@"\WOW6432Node\", StringComparison.OrdinalIgnoreCase))
+        {
+            const string hklmSoft = @"HKEY_LOCAL_MACHINE\SOFTWARE\";
+            if (expanded.StartsWith(hklmSoft, StringComparison.OrdinalIgnoreCase))
+            {
+                expanded = @"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\" + expanded.Substring(hklmSoft.Length);
+            }
+        }
+        return expanded;
     }
 
     private static string ReadAndFormatRegistryValueLine(
@@ -245,16 +265,29 @@ public static class RegistryBackup
     /// Backs up a Windows Scheduled Task XML file and cleanly unregisters it from Task Scheduler (schtasks.exe)
     /// so no orphaned TaskCache entries remain in the registry.
     /// </summary>
-    public static async Task<string?> BackupAndDeleteScheduledTaskAsync(string taskFilePath, string? taskSchedulerName, string appName)
+    public static async Task<(string? BackupXmlPath, string ResolvedTaskName)> BackupAndDeleteScheduledTaskWithNameAsync(
+        string taskFilePath,
+        string? taskSchedulerName,
+        string appName)
     {
         return await Task.Run(() =>
         {
             string? backupXmlPath = null;
+            string tn = taskSchedulerName ?? string.Empty;
             try
             {
                 if (!Directory.Exists(BackupDir))
                 {
                     Directory.CreateDirectory(BackupDir);
+                }
+
+                if (string.IsNullOrWhiteSpace(tn))
+                {
+                    string tasksDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "Tasks");
+                    if (taskFilePath.StartsWith(tasksDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        tn = "\\" + taskFilePath.Substring(tasksDir.Length).TrimStart('\\');
+                    }
                 }
 
                 if (File.Exists(taskFilePath))
@@ -267,38 +300,38 @@ public static class RegistryBackup
                     File.Copy(taskFilePath, backupXmlPath, overwrite: true);
                 }
 
-                string tn = taskSchedulerName ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(tn))
+                // Only delete the scheduled task if we successfully backed up its XML (or if XML was already gone)
+                if (!string.IsNullOrEmpty(backupXmlPath) || !File.Exists(taskFilePath))
                 {
-                    string tasksDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "Tasks");
-                    if (taskFilePath.StartsWith(tasksDir, StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrWhiteSpace(tn))
                     {
-                        tn = "\\" + taskFilePath.Substring(tasksDir.Length).TrimStart('\\');
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = "schtasks.exe",
+                            Arguments = $"/Delete /TN \"{tn}\" /F",
+                            CreateNoWindow = true,
+                            UseShellExecute = false
+                        };
+                        using var proc = Process.Start(psi);
+                        proc?.WaitForExit(4000);
                     }
-                }
 
-                if (!string.IsNullOrWhiteSpace(tn))
-                {
-                    var psi = new ProcessStartInfo
+                    if (File.Exists(taskFilePath))
                     {
-                        FileName = "schtasks.exe",
-                        Arguments = $"/Delete /TN \"{tn}\" /F",
-                        CreateNoWindow = true,
-                        UseShellExecute = false
-                    };
-                    using var proc = Process.Start(psi);
-                    proc?.WaitForExit(4000);
-                }
-
-                if (File.Exists(taskFilePath))
-                {
-                    FileBackup.SendToRecycleBin(taskFilePath);
+                        FileBackup.SendToRecycleBin(taskFilePath);
+                    }
                 }
             }
             catch { }
 
-            return backupXmlPath;
+            return (backupXmlPath, tn);
         });
+    }
+
+    public static async Task<string?> BackupAndDeleteScheduledTaskAsync(string taskFilePath, string? taskSchedulerName, string appName)
+    {
+        var (backupXmlPath, _) = await BackupAndDeleteScheduledTaskWithNameAsync(taskFilePath, taskSchedulerName, appName);
+        return backupXmlPath;
     }
 
     /// <summary>
@@ -447,15 +480,25 @@ public static class RegistryBackup
         return await Task.Run(() =>
         {
             int restored = 0;
+
+            // 1. Restore Registry (.reg) backups with accurate /reg:64 or /reg:32 view flag
             foreach (var regFile in manifest.RegBackupFiles)
             {
                 if (!File.Exists(regFile)) continue;
                 try
                 {
+                    string viewFlag = " /reg:64";
+                    if (manifest.RegBackupViewMap != null &&
+                        manifest.RegBackupViewMap.TryGetValue(regFile, out bool is64) &&
+                        !is64)
+                    {
+                        viewFlag = " /reg:32";
+                    }
+
                     var psi = new ProcessStartInfo
                     {
                         FileName = "reg.exe",
-                        Arguments = $"import \"{regFile}\"",
+                        Arguments = $"import \"{regFile}\"{viewFlag}",
                         CreateNoWindow = true,
                         UseShellExecute = false
                     };
@@ -466,13 +509,25 @@ public static class RegistryBackup
                 catch { }
             }
 
+            // 2. Restore Scheduled Tasks to their exact original Task Scheduler path
             foreach (var xmlFile in manifest.TaskXmlBackupFiles)
             {
                 if (!File.Exists(xmlFile)) continue;
                 try
                 {
-                    string fileName = Path.GetFileNameWithoutExtension(xmlFile);
-                    string taskName = "\\RevoSharp_Restored_" + fileName;
+                    string taskName;
+                    if (manifest.TaskScheduleMap != null &&
+                        manifest.TaskScheduleMap.TryGetValue(xmlFile, out string? origName) &&
+                        !string.IsNullOrWhiteSpace(origName))
+                    {
+                        taskName = origName.StartsWith('\\') ? origName : "\\" + origName;
+                    }
+                    else
+                    {
+                        string fileName = Path.GetFileNameWithoutExtension(xmlFile);
+                        taskName = "\\RevoSharp_Restored_" + fileName;
+                    }
+
                     var psi = new ProcessStartInfo
                     {
                         FileName = "schtasks.exe",
@@ -485,6 +540,29 @@ public static class RegistryBackup
                     if (proc?.ExitCode == 0) restored++;
                 }
                 catch { }
+            }
+
+            // 3. Restore backed-up file copies (e.g. Startup folder .lnk shortcuts and config files)
+            if (manifest.FileBackupCopyMap != null)
+            {
+                foreach (var (originalPath, backupCopyPath) in manifest.FileBackupCopyMap)
+                {
+                    if (string.IsNullOrWhiteSpace(originalPath) || !File.Exists(backupCopyPath))
+                        continue;
+
+                    try
+                    {
+                        string? parentDir = Path.GetDirectoryName(originalPath);
+                        if (!string.IsNullOrEmpty(parentDir) && !Directory.Exists(parentDir))
+                        {
+                            Directory.CreateDirectory(parentDir);
+                        }
+
+                        File.Copy(backupCopyPath, originalPath, overwrite: true);
+                        restored++;
+                    }
+                    catch { }
+                }
             }
 
             return restored;
@@ -511,7 +589,6 @@ public static class RegistryBackup
             regeditKey?.SetValue("LastKey", fullRegPath);
         }
 
-        // Kill existing regedit instance if needed or pass -m so it reads LastKey fresh
         Process.Start(new ProcessStartInfo
         {
             FileName = "regedit.exe",

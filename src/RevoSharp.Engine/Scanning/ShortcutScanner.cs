@@ -53,7 +53,7 @@ public class ShortcutScanner
                                     Path = lnk,
                                     SizeInBytes = ResidualScanner.CalculatePathSize(lnk, isDirectory: false),
                                     Confidence = ConfidenceLevel.High,
-                                    Reason = "快捷方式死链 (指向已卸载程序目标)",
+                                    Reason = "快捷方式死链 (指向目标程序路径)",
                                     IsSelected = true
                                 });
                             }
@@ -84,7 +84,7 @@ public class ShortcutScanner
     private static bool IsTargetMatch(string? targetPath, TargetProfile profile)
     {
         if (string.IsNullOrWhiteSpace(targetPath)) return false;
-        string lower = targetPath.ToLowerInvariant().Trim('"', ' ');
+        string lower = Environment.ExpandEnvironmentVariables(targetPath).ToLowerInvariant().Trim('"', ' ');
 
         if (profile.HasValidLocation)
         {
@@ -93,6 +93,17 @@ public class ShortcutScanner
             {
                 return true;
             }
+
+            if (!string.IsNullOrEmpty(profile.ShortLocation))
+            {
+                string shortPrefix = profile.ShortLocation.TrimEnd('\\') + "\\";
+                if (lower.StartsWith(shortPrefix) || lower.Equals(profile.ShortLocation))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         if (!string.IsNullOrEmpty(profile.SingleExecutableFile) &&
@@ -104,7 +115,8 @@ public class ShortcutScanner
         string fileName = Path.GetFileName(lower);
         if (profile.MainExeNames.Contains(fileName) && !lower.Contains(@"\windows\"))
         {
-            return true;
+            // When InstallLocation is unknown, only flag as a broken shortcut if the target binary no longer exists on disk
+            return !File.Exists(lower);
         }
 
         return false;

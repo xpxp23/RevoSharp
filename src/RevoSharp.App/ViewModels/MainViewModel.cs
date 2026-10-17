@@ -45,11 +45,15 @@ public partial class MainViewModel : ObservableObject
     private bool _isLoading;
 
     [ObservableProperty]
+    private bool _isInspectorOpen = true;
+
+    [ObservableProperty]
     private string _statusText = "就绪";
 
     public int TotalAppCount => _allApps.Count;
     public int RecentAppCount => _allApps.Count(a => a.IsRecentlyInstalled);
     public int TracedAppCount => _allApps.Count(a => a.HasTraceLog);
+    public int DesktopAppCount => _allApps.Count(a => !a.IsWindowsApp);
     public int StoreAppCount => _allApps.Count(a => a.IsWindowsApp);
 
     public MainViewModel()
@@ -93,13 +97,17 @@ public partial class MainViewModel : ObservableObject
             {
                 SelectedApp = Apps.FirstOrDefault(a => a.Id == previousSelectedId);
             }
+            SelectedApp ??= Apps.FirstOrDefault();
 
             int tracedCount = _allApps.Count(a => a.HasTraceLog);
             int recentCount = _allApps.Count(a => a.IsRecentlyInstalled);
-            StatusText = $"共发现 {_allApps.Count} 款程序（近期新装 {recentCount} 款 | 已关联监控日志 {tracedCount} 款）";
+            StatusText = $"共发现 {_allApps.Count} 款程序（近期新装 {recentCount} 款 · 已关联监控日志 {tracedCount} 款）";
 
-            // Asynchronously populate missing folder sizes in the background without blocking the UI
-            _ = _appLocator.PopulateMissingSizesAsync(_allApps, token);
+            // Asynchronously populate missing folder sizes in the background, marshaling property updates onto the UI thread
+            _ = _appLocator.PopulateMissingSizesAsync(
+                _allApps,
+                token,
+                update => Application.Current?.Dispatcher.InvokeAsync(update));
         }
         catch (Exception ex)
         {
@@ -116,6 +124,7 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(TotalAppCount));
         OnPropertyChanged(nameof(RecentAppCount));
         OnPropertyChanged(nameof(TracedAppCount));
+        OnPropertyChanged(nameof(DesktopAppCount));
         OnPropertyChanged(nameof(StoreAppCount));
     }
 
@@ -151,6 +160,12 @@ public partial class MainViewModel : ObservableObject
         }
 
         Apps = new ObservableCollection<InstalledApp>(query);
+    }
+
+    [RelayCommand]
+    public void ToggleInspector()
+    {
+        IsInspectorOpen = !IsInspectorOpen;
     }
 
     [RelayCommand]
@@ -211,6 +226,18 @@ public partial class MainViewModel : ObservableObject
         {
             Clipboard.SetText(SelectedApp.UninstallString);
             StatusText = $"已复制卸载命令: {SelectedApp.UninstallString}";
+        }
+        catch { }
+    }
+
+    [RelayCommand]
+    public void CopyInstallLocation()
+    {
+        if (SelectedApp == null || string.IsNullOrWhiteSpace(SelectedApp.InstallLocation)) return;
+        try
+        {
+            Clipboard.SetText(SelectedApp.InstallLocation);
+            StatusText = $"已复制安装路径: {SelectedApp.InstallLocation}";
         }
         catch { }
     }

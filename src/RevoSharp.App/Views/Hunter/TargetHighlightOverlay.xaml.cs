@@ -12,11 +12,18 @@ public partial class TargetHighlightOverlay : Window
     private const int WS_EX_TRANSPARENT = 0x00000020;
     private const int WS_EX_LAYERED = 0x00080000;
 
+    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_SHOWWINDOW = 0x0040;
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     public TargetHighlightOverlay()
     {
@@ -37,15 +44,6 @@ public partial class TargetHighlightOverlay : Window
             return;
         }
 
-        var source = PresentationSource.FromVisual(this);
-        double dpiX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
-        double dpiY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
-
-        Left = physicalLeft / dpiX;
-        Top = physicalTop / dpiY;
-        Width = Math.Max(10, physicalWidth / dpiX);
-        Height = Math.Max(10, physicalHeight / dpiY);
-
         if (isWarning)
         {
             HighlightBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x44, 0x44));
@@ -60,6 +58,32 @@ public partial class TargetHighlightOverlay : Window
         if (!IsVisible)
         {
             Show();
+        }
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero)
+        {
+            // Position directly in Win32 physical screen coordinates so mixed-DPI multi-monitor setups align 100% accurately
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                physicalLeft,
+                physicalTop,
+                Math.Max(10, physicalWidth),
+                Math.Max(10, physicalHeight),
+                SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+        else
+        {
+            var source = PresentationSource.FromVisual(this);
+            Matrix transform = source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+            var topLeft = transform.Transform(new Point(physicalLeft, physicalTop));
+            var size = transform.Transform(new Vector(physicalWidth, physicalHeight));
+
+            Left = topLeft.X;
+            Top = topLeft.Y;
+            Width = Math.Max(10, size.X);
+            Height = Math.Max(10, size.Y);
         }
     }
 }

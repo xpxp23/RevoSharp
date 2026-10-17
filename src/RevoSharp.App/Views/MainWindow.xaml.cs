@@ -73,11 +73,24 @@ public partial class MainWindow
         _ = ViewModel.LoadAppsAsync();
     }
 
+    /// <summary>
+    /// Safe row double-click handler: Only responds when an actual DataGridRow is double-clicked
+    /// (ignoring column header resize or scrollbar clicks), and opens the app's install location
+    /// instead of accidentally triggering a destructive uninstall.
+    /// </summary>
     private void OnDataGridDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (ViewModel.SelectedApp != null)
+        if (e.OriginalSource is not DependencyObject source) return;
+        var row = ItemsControl.ContainerFromElement(AppsDataGrid, source) as DataGridRow;
+        if (row == null || ViewModel.SelectedApp == null) return;
+
+        if (!ViewModel.IsInspectorOpen)
         {
-            OnUninstallClick(sender, e);
+            ViewModel.IsInspectorOpen = true;
+        }
+        else
+        {
+            ViewModel.OpenLocation();
         }
     }
 
@@ -88,7 +101,7 @@ public partial class MainWindow
 
         string titlePrompt = targets.Count == 1
             ? $"确定要卸载程序【{targets[0].DisplayName}】吗？\n\n原厂卸载向导运行完毕后，系统将自动进行深度逆向残留扫描。"
-            : $"已选中 {targets.Count} 款程序，是否按顺序执行批量队列卸载并清理残留？\n（在卸载等待窗口中可随时中止后续队列）";
+            : $"已选中 {targets.Count} 款程序，将按顺序执行批量队列卸载，并在队列完成后汇总审查清理所有残留。\n（在卸载等待窗口中可随时中止后续队列）";
 
         bool confirmed = FluentMessageDialog.ShowConfirm(
             this,
@@ -127,13 +140,17 @@ public partial class MainWindow
 
     private async Task RunUninstallQueueAsync(List<InstalledApp> queue, bool forceInteractive)
     {
-        bool isBatchSilent = !forceInteractive && queue.Count > 1;
+        bool isMultiQueue = queue.Count > 1;
         var aggregatedBatchResiduals = new List<ResidualItem>();
 
-        if (isBatchSilent)
+        if (isMultiQueue)
         {
-            ViewModel.StatusText = $"正在为批量静默卸载队列 ({queue.Count} 款软件) 创建系统还原点...";
-            await RegistryBackup.CreateSystemRestorePointAsync($"RevoSharp Batch Uninstall ({queue.Count} apps)");
+            ViewModel.StatusText = $"正在为批量卸载队列 ({queue.Count} 款软件) 创建系统还原点...";
+            bool rpCreated = await RegistryBackup.CreateSystemRestorePointAsync($"RevoSharp Batch Uninstall ({queue.Count} apps)");
+            if (!rpCreated)
+            {
+                ViewModel.StatusText = "系统还原点未创建（系统保护可能未开启或处于 24 小时冷却期），将继续执行常规注册表与回收站备份保护...";
+            }
         }
 
         for (int index = 0; index < queue.Count; index++)
@@ -177,12 +194,13 @@ public partial class MainWindow
                 }
             }
 
-            if (isBatchSilent)
+            if (isMultiQueue)
             {
                 ViewModel.StatusText = $"正在后台扫描【{app.DisplayName}】({index + 1}/{queue.Count}) 的残留项...";
                 var appResiduals = await ViewModel.ResidualScanner.ScanResidualsAsync(app);
                 foreach (var item in appResiduals)
                 {
+                    item.SourceAppName = app.DisplayName;
                     ResidualScanner.AddResidualIfUnique(aggregatedBatchResiduals, item);
                 }
             }
@@ -196,7 +214,7 @@ public partial class MainWindow
             }
         }
 
-        if (isBatchSilent && aggregatedBatchResiduals.Count > 0)
+        if (isMultiQueue && aggregatedBatchResiduals.Count > 0)
         {
             var combinedApp = new InstalledApp
             {

@@ -72,6 +72,14 @@ public class ResidualScanner
                 ScanTempDirectory(profile, results);
             }
 
+            foreach (var item in results)
+            {
+                if (string.IsNullOrEmpty(item.SourceAppName))
+                {
+                    item.SourceAppName = app.DisplayName;
+                }
+            }
+
             return results;
         });
     }
@@ -465,12 +473,6 @@ public class ResidualScanner
         return false;
     }
 
-    /// <summary>
-    /// Evaluates candidate folder/key name against target name safely (supporting both Latin and CJK names):
-    /// - Exact or space-insensitive match -> High confidence.
-    /// - Candidate starts with target + suffix: if suffix is a sibling edition (e.g. "Beta", "Canary", "Code"),
-    ///   NEVER mark as High confidence; only include as Low confidence in Advanced mode to prevent collateral deletion!
-    /// </summary>
     private static bool EvaluateNameMatch(
         string candidate,
         string target,
@@ -535,10 +537,6 @@ public class ResidualScanner
         return false;
     }
 
-    /// <summary>
-    /// Computes effective semantic length where each CJK ideograph counts as 2 characters,
-    /// allowing 2-3 character Chinese software names (e.g. "钉钉", "向日葵") to match accurately while blocking 2-char English substrings.
-    /// </summary>
     private static int GetEffectiveLength(string text)
     {
         if (string.IsNullOrEmpty(text)) return 0;

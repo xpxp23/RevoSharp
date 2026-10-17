@@ -60,11 +60,11 @@ public partial class HunterActionHudViewModel : ObservableObject
 
         if (targetInfo.IsSystemCritical)
         {
-            StatusMessage = $"🛡️ {targetInfo.SystemProtectionReason}";
+            StatusMessage = targetInfo.SystemProtectionReason;
         }
         else if (targetInfo.HasAutostartEntry)
         {
-            StatusMessage = $"已检测到 {targetInfo.AutostartDescriptions.Count} 处系统自启动驻留项";
+            StatusMessage = $"已检测到 {targetInfo.AutostartDescriptions.Count} 处系统自启动驻留项（含注册表/启动目录/计划任务）";
         }
         else
         {
@@ -184,9 +184,15 @@ public partial class HunterActionHudViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            bool ok = await Task.Run(() => _hunterService.KillProcessTree(TargetInfo.ProcessId));
+            int targetPid = TargetInfo.ProcessId;
+            bool ok = await Task.Run(() => _hunterService.KillProcessTree(targetPid));
+            if (ok)
+            {
+                TargetInfo.ProcessId = 0;
+                OnPropertyChanged(nameof(CanKillProcess));
+            }
             StatusMessage = ok
-                ? $"✅ 已成功终止目标进程树 (PID: {TargetInfo.ProcessId})"
+                ? $"已成功终止目标进程树 (PID: {targetPid})"
                 : "终止进程失败（目标进程可能已退出）";
         }
         finally
@@ -203,10 +209,15 @@ public partial class HunterActionHudViewModel : ObservableObject
         try
         {
             bool killed = TargetInfo.ProcessId > 4 && await Task.Run(() => _hunterService.KillProcessTree(TargetInfo.ProcessId));
+            if (killed)
+            {
+                TargetInfo.ProcessId = 0;
+                OnPropertyChanged(nameof(CanKillProcess));
+            }
             bool removed = await _hunterService.DisableAutostartAsync(TargetInfo);
 
             StatusMessage = removed
-                ? (killed ? "✅ 已终止目标进程并安全备份清除所有自启动项（可在备份中心还原）" : "✅ 已安全备份并清除所有开机自启动项（可在备份中心还原）")
+                ? (killed ? "已终止目标进程并安全备份清除所有自启动项（可在备份中心一键还原）" : "已安全备份并清除所有开机自启动项（可在备份中心一键还原）")
                 : "未发现或无法移除自启项";
             OnPropertyChanged(nameof(CanDisableAutostart));
         }

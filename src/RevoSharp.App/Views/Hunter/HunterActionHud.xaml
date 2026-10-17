@@ -15,18 +15,19 @@
     <Window.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
         <conv:BoolToVisibilityConverter x:Key="InverseBoolToVis" Invert="True" />
+        <conv:NullToVisibilityConverter x:Key="NullToVisInv" Invert="True" />
     </Window.Resources>
 
     <!-- Outer Margin="24" prevents the 24px DropShadowEffect from being clipped at window borders -->
     <Border Width="520"
             Margin="24"
-            Background="#F4181A20"
-            BorderBrush="#0088FF"
-            BorderThickness="1.5"
+            Background="#F81C1E26"
+            BorderBrush="#3AFFFFFF"
+            BorderThickness="1"
             CornerRadius="12"
             Padding="18">
         <Border.Effect>
-            <DropShadowEffect Color="#000000" BlurRadius="24" ShadowDepth="4" Opacity="0.75" />
+            <DropShadowEffect Color="#000000" BlurRadius="24" ShadowDepth="4" Opacity="0.65" />
         </Border.Effect>
 
         <Grid>
@@ -45,29 +46,36 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Width="48" Height="48" CornerRadius="10" Background="#28FFFFFF" Margin="0,0,12,0">
+                <Border Grid.Column="0" Width="48" Height="48" CornerRadius="10" Background="#1EFFFFFF" BorderBrush="#28FFFFFF" BorderThickness="1" Margin="0,0,12,0">
                     <Grid>
-                        <ui:SymbolIcon Symbol="Apps24" FontSize="24" Foreground="#66FFFFFF"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        <Image Source="{Binding AppIcon}" Width="36" Height="36" Stretch="Uniform" />
+                        <Image Source="{Binding AppIcon}"
+                               Width="34" Height="34"
+                               Stretch="Uniform"
+                               RenderOptions.BitmapScalingMode="HighQuality" />
+                        <ui:SymbolIcon Symbol="Apps24"
+                                       FontSize="24"
+                                       Foreground="#88FFFFFF"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Visibility="{Binding AppIcon, Converter={StaticResource NullToVisInv}}" />
                     </Grid>
                 </Border>
 
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="{Binding TargetInfo.WindowTitle}"
-                               FontSize="16"
-                               FontWeight="Bold"
+                               FontSize="15.5"
+                               FontWeight="SemiBold"
                                Foreground="White"
                                TextTrimming="CharacterEllipsis" />
 
                     <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                        <Border Background="#330080FF" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
-                            <TextBlock Text="{Binding TargetInfo.ProcessName}" FontSize="11" Foreground="#80C0FF" />
+                        <Border Background="#2E0078D4" BorderBrush="#4460CDFF" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
+                            <TextBlock Text="{Binding TargetInfo.ProcessName}" FontSize="11" Foreground="#88D4FF" FontFamily="Consolas, Microsoft YaHei UI" />
                         </Border>
-                        <Border Background="#22FFFFFF" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
-                            <TextBlock Text="{Binding TargetInfo.ProcessId, StringFormat='PID: {0}'}" FontSize="11" Foreground="#CCCCCC" />
+                        <Border Background="#1AFFFFFF" CornerRadius="4" Padding="6,2" Margin="0,0,6,0">
+                            <TextBlock Text="{Binding TargetInfo.ProcessId, StringFormat='PID: {0}'}" FontSize="11" Foreground="#CCCCCC" FontFamily="Consolas, Microsoft YaHei UI" />
                         </Border>
-                        <Border Background="#22FFFFFF" CornerRadius="4" Padding="6,2">
+                        <Border Background="#1AFFFFFF" CornerRadius="4" Padding="6,2">
                             <TextBlock Text="{Binding TargetInfo.Architecture}" FontSize="11" Foreground="#CCCCCC" />
                         </Border>
                     </StackPanel>
@@ -81,33 +89,46 @@
             </Grid>
 
             <!-- 2. Badges & Path Details -->
-            <Border Grid.Row="1" Background="#16FFFFFF" CornerRadius="8" Padding="10" Margin="0,0,0,14">
+            <Border Grid.Row="1" Background="#14FFFFFF" BorderBrush="#1EFFFFFF" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,14">
                 <StackPanel>
                     <WrapPanel Margin="0,0,0,6">
-                        <Border Background="#44FF4444" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                        <Border Background="#38FF4444" BorderBrush="#55FF6666" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsSystemCritical, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="🛡️ 系统核心保护 (禁止破坏性操作)" FontSize="11" Foreground="#FFAAAA" FontWeight="SemiBold" />
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Shield24" FontSize="12" Foreground="#FFAAAA" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="系统核心保护 (禁止破坏性操作)" FontSize="11" Foreground="#FFAAAA" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            </StackPanel>
                         </Border>
 
-                        <Border Background="#3344DD66" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                        <Border Background="#2844DD66" BorderBrush="#446CCB5F" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsRegisteredApp, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="📦 已登记安装软件" FontSize="11" Foreground="#AAFFAA" />
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Box24" FontSize="12" Foreground="#AAFFAA" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="已登记安装软件" FontSize="11" Foreground="#AAFFAA" VerticalAlignment="Center" />
+                            </StackPanel>
                         </Border>
 
-                        <Border Background="#33FFAA00" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                        <Border Background="#28FFAA00" BorderBrush="#44FFCC44" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.IsRegisteredApp, Converter={StaticResource InverseBoolToVis}}">
-                            <TextBlock Text="⚡ 独立/便携程序 (已保护共享父目录)" FontSize="11" Foreground="#FFEE88" />
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Flash24" FontSize="12" Foreground="#FFEE88" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="独立/便携程序 (已保护共享父目录)" FontSize="11" Foreground="#FFEE88" VerticalAlignment="Center" />
+                            </StackPanel>
                         </Border>
 
-                        <Border Background="#33AA88FF" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
+                        <Border Background="#28AA88FF" BorderBrush="#44C395FF" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,6,4"
                                 Visibility="{Binding TargetInfo.HasAutostartEntry, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="{Binding TargetInfo.AutostartDescriptions.Count, StringFormat='🔄 驻留自启动项 ({0}处)'}" FontSize="11" Foreground="#DDAAFF" />
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="ArrowClockwise24" FontSize="12" Foreground="#DDAAFF" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding TargetInfo.AutostartDescriptions.Count, StringFormat='驻留自启动项 ({0}处)'}" FontSize="11" Foreground="#DDAAFF" VerticalAlignment="Center" />
+                            </StackPanel>
                         </Border>
                     </WrapPanel>
 
                     <TextBlock Text="{Binding TargetInfo.ExecutablePath, StringFormat='路径: {0}'}"
                                FontSize="11"
-                               Foreground="#AAAAAA"
+                               FontFamily="Consolas, Microsoft YaHei UI"
+                               Foreground="#B0B4BE"
                                TextTrimming="CharacterEllipsis"
                                ToolTip="{Binding TargetInfo.ExecutablePath}" />
                 </StackPanel>
@@ -191,7 +212,7 @@
                 <TextBlock Grid.Column="1"
                            Text="{Binding StatusMessage}"
                            FontSize="12"
-                           Foreground="#80C0FF"
+                           Foreground="#88D4FF"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"
                            ToolTip="{Binding StatusMessage}" />

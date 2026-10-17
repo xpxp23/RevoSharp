@@ -23,6 +23,14 @@ public class HunterService
         "ctfmon.exe", "dllhost.exe", "conhost.exe", "registry", "system", "idle"
     };
 
+    private static readonly HashSet<string> AutostartTriggerElementNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LogonTrigger",
+        "BootTrigger",
+        "SessionStateChangeTrigger",
+        "RegistrationTrigger"
+    };
+
     #region Win32 P/Invoke
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT
@@ -382,7 +390,6 @@ public class HunterService
             catch { }
         }
 
-        // Fixed OverflowException when GetHashCode() returns int.MinValue by casting to uint unchecked
         uint safeHash = unchecked((uint)info.ExecutablePath.GetHashCode());
         var virtualApp = new InstalledApp
         {
@@ -412,15 +419,18 @@ public class HunterService
         string exeName = Path.GetFileName(info.ExecutablePath);
         string exeNoExt = Path.GetFileNameWithoutExtension(info.ExecutablePath);
         string exePath = info.ExecutablePath;
+        string? safeDirPrefix = (!string.IsNullOrEmpty(info.DirectoryPath) && !AppLocator.IsProtectedSharedDirectory(info.DirectoryPath))
+            ? info.DirectoryPath.TrimEnd('\\') + "\\"
+            : null;
 
-        CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
 
         if (Environment.Is64BitOperatingSystem)
         {
-            CheckRegistryRun(Registry.LocalMachine, @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, info.AutostartDescriptions);
+            CheckRegistryRun(Registry.LocalMachine, @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
         }
 
         string userStartup = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
@@ -429,10 +439,19 @@ public class HunterService
         string commonStartup = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup);
         CheckStartupFolder(commonStartup, exeName, exeNoExt, exePath, info.AutostartDescriptions);
 
+        // Also check Scheduled Task autoruns matching this target
+        CheckScheduledTaskAutorunsForTarget(exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+
         info.HasAutostartEntry = info.AutostartDescriptions.Count > 0;
     }
 
-    private static void CheckRegistryRun(RegistryKey root, string subKey, string exeName, string exePath, List<string> list)
+    private static void CheckRegistryRun(
+        RegistryKey root,
+        string subKey,
+        string exeName,
+        string exePath,
+        string? safeDirPrefix,
+        List<string> list)
     {
         try
         {
@@ -442,7 +461,9 @@ public class HunterService
             {
                 string? val = key.GetValue(valName)?.ToString();
                 if (!string.IsNullOrEmpty(val) &&
-                    (val.Contains(exeName, StringComparison.OrdinalIgnoreCase) || val.Contains(exePath, StringComparison.OrdinalIgnoreCase)))
+                    (val.Contains(exePath, StringComparison.OrdinalIgnoreCase) ||
+                     (!string.IsNullOrEmpty(safeDirPrefix) && val.Contains(safeDirPrefix, StringComparison.OrdinalIgnoreCase)) ||
+                     val.Contains(exeName, StringComparison.OrdinalIgnoreCase)))
                 {
                     list.Add($"{root.Name}\\{subKey} -> [{valName}]");
                 }
@@ -469,6 +490,29 @@ public class HunterService
         catch { }
     }
 
+    private static void CheckScheduledTaskAutorunsForTarget(
+        string exeName,
+        string exePath,
+        string? safeDirPrefix,
+        List<string> list)
+    {
+        try
+        {
+            var tasks = new List<AutostartEntry>();
+            ScanThirdPartyScheduledTaskAutoruns(tasks);
+            foreach (var task in tasks)
+            {
+                if (task.ExecutablePath.Equals(exePath, StringComparison.OrdinalIgnoreCase) ||
+                    Path.GetFileName(task.ExecutablePath).Equals(exeName, StringComparison.OrdinalIgnoreCase) ||
+                    (!string.IsNullOrEmpty(safeDirPrefix) && task.ExecutablePath.StartsWith(safeDirPrefix, StringComparison.OrdinalIgnoreCase)))
+                {
+                    list.Add($"计划任务自启: {task.ScheduledTaskPath}");
+                }
+            }
+        }
+        catch { }
+    }
+
     private static bool ShortcutTargetMatches(string lnkFile, string exeName, string exePath)
     {
         if (!lnkFile.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) return false;
@@ -482,8 +526,8 @@ public class HunterService
     }
 
     /// <summary>
-    /// Asynchronously backs up and removes all autostart entries for a Hunter target,
-    /// saving a BackupManifest so the user can restore them from the Backup Manager at any time.
+    /// Asynchronously backs up and removes all autostart entries (Registry Run, Startup Folders, and Logon Scheduled Tasks)
+    /// for a Hunter target, saving a complete BackupManifest so the user can restore them from the Backup Manager at any time.
     /// </summary>
     public async Task<bool> DisableAutostartAsync(HunterTargetInfo info)
     {
@@ -492,6 +536,9 @@ public class HunterService
         string exeName = Path.GetFileName(info.ExecutablePath);
         string exeNoExt = Path.GetFileNameWithoutExtension(info.ExecutablePath);
         string exePath = info.ExecutablePath;
+        string? safeDirPrefix = (!string.IsNullOrEmpty(info.DirectoryPath) && !AppLocator.IsProtectedSharedDirectory(info.DirectoryPath))
+            ? info.DirectoryPath.TrimEnd('\\') + "\\"
+            : null;
         string appName = !string.IsNullOrWhiteSpace(info.WindowTitle) ? info.WindowTitle : exeNoExt;
 
         var manifest = new BackupManifest
@@ -503,22 +550,21 @@ public class HunterService
 
         bool changed = false;
 
-        var regTargets = new (RegistryKey Root, string HiveShort, string SubKey)[]
+        var regTargets = new (RegistryKey Root, string HiveShort, string SubKey, bool Is64View)[]
         {
-            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run"),
-            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce"),
-            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run"),
-            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce"),
-            (Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run")
+            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run", true),
+            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", true),
+            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run", true),
+            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", true),
+            (Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", false)
         };
 
-        foreach (var (root, hiveShort, subKey) in regTargets)
+        foreach (var (root, hiveShort, subKey, is64View) in regTargets)
         {
             if (!Environment.Is64BitOperatingSystem && subKey.Contains("WOW6432Node")) continue;
-            var backedUp = await RemoveRegistryRunAsync(root, hiveShort, subKey, exeName, exePath, appName);
+            var backedUp = await RemoveRegistryRunAsync(root, hiveShort, subKey, is64View, exeName, exePath, safeDirPrefix, appName, manifest);
             if (backedUp.Count > 0)
             {
-                manifest.RegBackupFiles.AddRange(backedUp);
                 changed = true;
             }
         }
@@ -529,11 +575,36 @@ public class HunterService
             Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup)
         })
         {
-            var recycled = RemoveStartupFiles(folder, exeName, exeNoExt, exePath);
+            var recycled = RemoveStartupFiles(folder, exeName, exeNoExt, exePath, appName, manifest);
             if (recycled.Count > 0)
             {
-                manifest.RecycledFilePaths.AddRange(recycled);
                 changed = true;
+            }
+        }
+
+        // Also back up and remove matching Scheduled Task autoruns
+        var allTaskAutoruns = new List<AutostartEntry>();
+        ScanThirdPartyScheduledTaskAutoruns(allTaskAutoruns);
+        foreach (var taskEntry in allTaskAutoruns)
+        {
+            if (taskEntry.ExecutablePath.Equals(exePath, StringComparison.OrdinalIgnoreCase) ||
+                Path.GetFileName(taskEntry.ExecutablePath).Equals(exeName, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrEmpty(safeDirPrefix) && taskEntry.ExecutablePath.StartsWith(safeDirPrefix, StringComparison.OrdinalIgnoreCase)))
+            {
+                var (xmlBak, resolvedTn) = await RegistryBackup.BackupAndDeleteScheduledTaskWithNameAsync(
+                    taskEntry.FullLocation,
+                    taskEntry.ScheduledTaskPath,
+                    appName);
+                if (!string.IsNullOrEmpty(xmlBak))
+                {
+                    manifest.TaskXmlBackupFiles.Add(xmlBak);
+                    if (!string.IsNullOrEmpty(resolvedTn))
+                    {
+                        manifest.TaskScheduleMap[xmlBak] = resolvedTn;
+                    }
+                    manifest.BackedUpTargetDescriptions.Add($"[计划任务] {resolvedTn}");
+                    changed = true;
+                }
             }
         }
 
@@ -550,9 +621,12 @@ public class HunterService
         RegistryKey root,
         string hiveShort,
         string subKey,
+        bool is64View,
         string exeName,
         string exePath,
-        string appName)
+        string? safeDirPrefix,
+        string appName,
+        BackupManifest manifest)
     {
         var regBackups = new List<string>();
         try
@@ -564,14 +638,20 @@ public class HunterService
             {
                 string? val = key.GetValue(valName)?.ToString();
                 if (!string.IsNullOrEmpty(val) &&
-                    (val.Contains(exeName, StringComparison.OrdinalIgnoreCase) || val.Contains(exePath, StringComparison.OrdinalIgnoreCase)))
+                    (val.Contains(exePath, StringComparison.OrdinalIgnoreCase) ||
+                     (!string.IsNullOrEmpty(safeDirPrefix) && val.Contains(safeDirPrefix, StringComparison.OrdinalIgnoreCase)) ||
+                     val.Contains(exeName, StringComparison.OrdinalIgnoreCase)))
                 {
-                    string? bak = await RegistryBackup.ExportValueAsync($@"{hiveShort}\{subKey}", valName, val, appName);
+                    string fullKey = $@"{hiveShort}\{subKey}";
+                    string? bak = await RegistryBackup.ExportValueAsync(fullKey, valName, val, appName, is64View);
                     if (!string.IsNullOrEmpty(bak))
                     {
                         regBackups.Add(bak);
+                        manifest.RegBackupFiles.Add(bak);
+                        manifest.RegBackupViewMap[bak] = is64View;
+                        manifest.BackedUpTargetDescriptions.Add($"[注册表值] {fullKey} [{valName}]");
+                        key.DeleteValue(valName, false);
                     }
-                    key.DeleteValue(valName, false);
                 }
             }
         }
@@ -580,7 +660,13 @@ public class HunterService
         return regBackups;
     }
 
-    private static List<string> RemoveStartupFiles(string folder, string exeName, string exeNoExt, string exePath)
+    private static List<string> RemoveStartupFiles(
+        string folder,
+        string exeName,
+        string exeNoExt,
+        string exePath,
+        string appName,
+        BackupManifest manifest)
     {
         var recycled = new List<string>();
         if (!Directory.Exists(folder)) return recycled;
@@ -592,9 +678,16 @@ public class HunterService
                 if ((exeNoExt.Length >= 3 && fnameNoExt.Contains(exeNoExt, StringComparison.OrdinalIgnoreCase)) ||
                     ShortcutTargetMatches(file, exeName, exePath))
                 {
+                    string? snapshotCopy = FileBackup.TryCreateFileBackupCopy(file, appName);
                     if (FileBackup.SendToRecycleBin(file))
                     {
                         recycled.Add(file);
+                        manifest.RecycledFilePaths.Add(file);
+                        if (!string.IsNullOrEmpty(snapshotCopy))
+                        {
+                            manifest.FileBackupCopyMap[file] = snapshotCopy;
+                        }
+                        manifest.BackedUpTargetDescriptions.Add($"[启动文件] {file}");
                     }
                 }
             }
@@ -630,7 +723,7 @@ public class HunterService
     }
 
     /// <summary>
-    /// Enumerates all system-wide and current-user autostart entries (Registry Run/RunOnce, Startup Folders, and Logon Scheduled Tasks),
+    /// Enumerates all system-wide and current-user autostart entries (Registry Run/RunOnce, Startup Folders, and Logon/Boot Scheduled Tasks),
     /// including Windows Task Manager StartupApproved enabled/disabled state!
     /// </summary>
     public List<AutostartEntry> GetAllAutostartEntries()
@@ -743,7 +836,7 @@ public class HunterService
             catch { }
         }
 
-        // 3. Third-party Scheduled Tasks with Logon/Boot triggers
+        // 3. Third-party Scheduled Tasks with verified Logon/Boot/Startup triggers
         ScanThirdPartyScheduledTaskAutoruns(entries);
 
         return entries;
@@ -765,7 +858,7 @@ public class HunterService
             {
                 string relPath = taskFile.Substring(tasksDir.Length).TrimStart('\\');
                 if (relPath.StartsWith("Microsoft\\", StringComparison.OrdinalIgnoreCase) ||
-                    relPath.StartsWith("Mozilla\\", StringComparison.OrdinalIgnoreCase) == false && relPath.StartsWith("Windows", StringComparison.OrdinalIgnoreCase))
+                    relPath.StartsWith("Windows\\", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -774,6 +867,16 @@ public class HunterService
                 {
                     var doc = XDocument.Load(taskFile);
                     XNamespace ns = doc.Root?.Name.Namespace ?? XNamespace.None;
+
+                    // Verify that the task actually has a Logon, Boot, SessionStateChange, or Registration trigger
+                    var triggersElement = doc.Descendants(ns + "Triggers").FirstOrDefault();
+                    if (triggersElement != null && triggersElement.HasElements)
+                    {
+                        bool hasAutostartTrigger = triggersElement.Elements()
+                            .Any(el => AutostartTriggerElementNames.Contains(el.Name.LocalName));
+                        if (!hasAutostartTrigger)
+                            continue;
+                    }
 
                     string? command = doc.Descendants(ns + "Command").FirstOrDefault()?.Value?.Trim().Trim('"');
                     if (string.IsNullOrWhiteSpace(command)) continue;
@@ -919,7 +1022,7 @@ public class HunterService
     }
 
     /// <summary>
-    /// Backs up an autostart entry and creates a full BackupManifest so it is immediately visible and restorable in the Backup Manager.
+    /// Backs up an autostart entry and creates a full BackupManifest so it is immediately visible and 1-click restorable in the Backup Manager.
     /// </summary>
     public async Task<bool> RemoveAutostartEntryAsync(AutostartEntry entry)
     {
@@ -934,25 +1037,40 @@ public class HunterService
 
         if (entry.IsScheduledTask)
         {
-            string? xmlBak = await RegistryBackup.BackupAndDeleteScheduledTaskAsync(entry.FullLocation, entry.ScheduledTaskPath, entry.Name);
+            var (xmlBak, resolvedTn) = await RegistryBackup.BackupAndDeleteScheduledTaskWithNameAsync(
+                entry.FullLocation,
+                entry.ScheduledTaskPath,
+                entry.Name);
             if (!string.IsNullOrEmpty(xmlBak))
             {
                 manifest.TaskXmlBackupFiles.Add(xmlBak);
+                if (!string.IsNullOrEmpty(resolvedTn))
+                {
+                    manifest.TaskScheduleMap[xmlBak] = resolvedTn;
+                }
+                manifest.BackedUpTargetDescriptions.Add($"[计划任务] {resolvedTn}");
                 removed = true;
             }
         }
         else if (entry.IsStartupShortcut)
         {
+            string? snapshotCopy = FileBackup.TryCreateFileBackupCopy(entry.FullLocation, $"Autostart_{entry.Name}");
             if (FileBackup.SendToRecycleBin(entry.FullLocation))
             {
                 manifest.RecycledFilePaths.Add(entry.FullLocation);
+                if (!string.IsNullOrEmpty(snapshotCopy))
+                {
+                    manifest.FileBackupCopyMap[entry.FullLocation] = snapshotCopy;
+                }
+                manifest.BackedUpTargetDescriptions.Add($"[启动文件] {entry.FullLocation}");
                 removed = true;
             }
         }
         else
         {
+            string fullKey = $@"{entry.RegistryHiveName}\{entry.RegistrySubKey}";
             string? regBak = await RegistryBackup.ExportValueAsync(
-                $@"{entry.RegistryHiveName}\{entry.RegistrySubKey}",
+                fullKey,
                 entry.Name,
                 entry.Command,
                 $"Autostart_{entry.Name}",
@@ -961,9 +1079,10 @@ public class HunterService
             if (!string.IsNullOrEmpty(regBak))
             {
                 manifest.RegBackupFiles.Add(regBak);
+                manifest.RegBackupViewMap[regBak] = entry.Is64BitRegistryView;
+                manifest.BackedUpTargetDescriptions.Add($"[注册表值] {fullKey} [{entry.Name}]");
+                removed = RegistryBackup.DeleteValue(entry.RegistryHiveName, entry.RegistrySubKey, entry.Name, entry.Is64BitRegistryView);
             }
-
-            removed = RegistryBackup.DeleteValue(entry.RegistryHiveName, entry.RegistrySubKey, entry.Name, entry.Is64BitRegistryView);
         }
 
         if (removed && manifest.TotalBackedUpItems > 0)
