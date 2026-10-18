@@ -15,6 +15,7 @@ namespace RevoSharp.Engine.Scanning;
 public static class MsiDatabaseScanner
 {
     private const int ERROR_SUCCESS = 0;
+    private const int ERROR_MORE_DATA = 234;
     private const int INSTALLSTATE_LOCAL = 3;
     private const int INSTALLSTATE_SOURCE = 4;
 
@@ -66,14 +67,19 @@ public static class MsiDatabaseScanner
         // 2. If the target has a valid MSI ProductCode GUID, query packed GUID metadata & msi.dll component paths
         if (!string.IsNullOrEmpty(profile.GuidString))
         {
+            int foundViaUserData = 0;
             string? packedGuid = TryConvertToPackedGuid(profile.GuidString);
             if (!string.IsNullOrEmpty(packedGuid))
             {
                 ScanPackedGuidMetadata(packedGuid, profile.GuidString, results);
-                ScanUserDataComponentsForProduct(packedGuid, profile, results);
+                foundViaUserData = ScanUserDataComponentsForProduct(packedGuid, profile, results);
             }
 
-            ScanNativeMsiApiForProduct(profile.GuidString, profile, results);
+            // Only fall back to global MsiEnumComponents enumeration if UserData registry tree yielded no component mappings
+            if (foundViaUserData == 0)
+            {
+                ScanNativeMsiApiForProduct(profile.GuidString, results);
+            }
         }
     }
 
@@ -111,14 +117,15 @@ public static class MsiDatabaseScanner
         catch { }
     }
 
-    private static void ScanUserDataComponentsForProduct(string packedProductGuid, TargetProfile profile, List<ResidualItem> results)
+    private static int ScanUserDataComponentsForProduct(string packedProductGuid, TargetProfile profile, List<ResidualItem> results)
     {
+        int matchedCount = 0;
         const string componentsRoot = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components";
         try
         {
             using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
             using var compRootKey = baseKey.OpenSubKey(componentsRoot);
-            if (compRootKey == null) return;
+            if (compRootKey == null) return 0;
 
             foreach (var compName in compRootKey.GetSubKeyNames())
             {
@@ -130,6 +137,7 @@ public static class MsiDatabaseScanner
                     string? compTarget = compKey.GetValue(packedProductGuid) as string;
                     if (compTarget == null) continue;
 
+                    matchedCount++;
                     string[] valueNames = compKey.GetValueNames();
                     if (valueNames.Length == 1)
                     {
@@ -181,9 +189,11 @@ public static class MsiDatabaseScanner
             }
         }
         catch { }
+
+        return matchedCount;
     }
 
-    private static void ScanNativeMsiApiForProduct(string productCode, TargetProfile profile, List<ResidualItem> results)
+    private static void ScanNativeMsiApiForProduct(string productCode, List<ResidualItem> results)
     {
         try
         {
@@ -191,12 +201,19 @@ public static class MsiDatabaseScanner
             var pathBuf = new StringBuilder(1024);
             uint index = 0;
 
-            while (index < 12000 && MsiEnumComponents(index, compBuf) == ERROR_SUCCESS)
+            while (index < 200000 && MsiEnumComponents(index, compBuf) == ERROR_SUCCESS)
             {
                 index++;
                 string compCode = compBuf.ToString();
                 uint cch = (uint)pathBuf.Capacity;
                 int state = MsiGetComponentPath(productCode, compCode, pathBuf, ref cch);
+
+                if (state == ERROR_MORE_DATA && cch > pathBuf.Capacity)
+                {
+                    pathBuf.EnsureCapacity((int)cch + 4);
+                    cch = (uint)pathBuf.Capacity;
+                    state = MsiGetComponentPath(productCode, compCode, pathBuf, ref cch);
+                }
 
                 if ((state == INSTALLSTATE_LOCAL || state == INSTALLSTATE_SOURCE) && cch > 0)
                 {

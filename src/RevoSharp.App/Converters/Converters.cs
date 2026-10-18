@@ -98,8 +98,8 @@ public class StringToSymbolRegularConverter : IValueConverter
 }
 
 /// <summary>
-/// Non-blocking application icon loader & converter: returns cached frozen ImageSource immediately if ready,
-/// and preloads icons on a background worker with batched UI thread updates so scrolling never blocks on disk I/O.
+/// Non-blocking application icon loader & converter: hydrates already-cached icons synchronously (<1ms) on list refresh
+/// to eliminate icon flicker, and preloads uncached icons on a background worker with batched UI thread updates.
 /// </summary>
 public class AppIconConverter : IValueConverter
 {
@@ -126,6 +126,21 @@ public class AppIconConverter : IValueConverter
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Immediately assigns CachedIcon from the in-memory IconCache dictionary before Apps is bound to DataGrid,
+    /// preventing icons from flashing blank when refreshing or toggling filters.
+    /// </summary>
+    public static void HydrateCachedIconsImmediate(IEnumerable<InstalledApp> apps)
+    {
+        foreach (var app in apps)
+        {
+            if (app.CachedIcon == null && IconCache.TryGetValue(app.Id, out var cached) && cached != null)
+            {
+                app.CachedIcon = cached;
+            }
+        }
     }
 
     public static void PreloadIconsInBackground(

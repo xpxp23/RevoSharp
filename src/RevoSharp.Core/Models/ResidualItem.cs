@@ -4,6 +4,41 @@ using RevoSharp.Core.Enums;
 
 namespace RevoSharp.Core.Models;
 
+/// <summary>
+/// Coordinates batch tree node check-state cascades so checking/unchecking a parent folder or registry key
+/// with hundreds of children only triggers a single ViewModel selection recalculation instead of an O(N^2) event storm.
+/// </summary>
+public static class TreeSelectionSyncScope
+{
+    [ThreadStatic]
+    private static int _suppressDepth;
+
+    public static bool IsBatchUpdating => _suppressDepth > 0;
+
+    public static event Action? BatchUpdateCompleted;
+
+    public static IDisposable BeginBatch()
+    {
+        _suppressDepth++;
+        return new ScopeToken();
+    }
+
+    private sealed class ScopeToken : IDisposable
+    {
+        private bool _disposed;
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            if (--_suppressDepth <= 0)
+            {
+                _suppressDepth = 0;
+                BatchUpdateCompleted?.Invoke();
+            }
+        }
+    }
+}
+
 public class ResidualItem : INotifyPropertyChanged
 {
     private bool _isSelected;
@@ -11,21 +46,30 @@ public class ResidualItem : INotifyPropertyChanged
     private string _lockedBySummary = string.Empty;
 
     public required ResidualType Type { get; init; }
-    public ResidualCategory Category { get; init; } = ResidualCategory.File;
+    public ResidualCategory Category { get; set; } = ResidualCategory.File;
     public required string Path { get; init; }
-    public string? ValueName { get; init; }
-    public string? ValuePreview { get; init; }
-    public string? TaskSchedulerName { get; init; }
-    public bool? Is64BitRegistryView { get; init; }
-    public string? EnvironmentVariableName { get; init; }
-    public bool IsSystemEnvironmentVariable { get; init; }
-    public string? PathSegmentToRemove { get; init; }
-    public string? DriverPublishedInfName { get; init; }
-    public required ConfidenceLevel Confidence { get; init; }
-    public required string Reason { get; init; }
-    public long SizeInBytes { get; init; }
+    public string? ValueName { get; set; }
+    public string? ValuePreview { get; set; }
+    public string? ServiceName { get; set; }
+    public string? TaskSchedulerName { get; set; }
+    public bool? Is64BitRegistryView { get; set; }
+    public string? EnvironmentVariableName { get; set; }
+    public bool IsSystemEnvironmentVariable { get; set; }
+    public string? PathSegmentToRemove { get; set; }
+    public string? DriverPublishedInfName { get; set; }
+    public string? DigitalSignatureInfo { get; set; }
+    public ConfidenceLevel Confidence { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public long SizeInBytes { get; set; }
     public string SourceAppName { get; set; } = string.Empty;
     public List<LockingProcessInfo> LockingProcesses { get; set; } = [];
+
+    /// <summary>
+    /// True ONLY when this parent Directory/RegistryKey was automatically deselected because a child item under it
+    /// was unchecked while other children remain checked. Prevents whole-folder deletion when the user explicitly
+    /// unchecked the parent directory itself!
+    /// </summary>
+    public bool IsDemotedByChildUncheck { get; set; }
 
     public bool IsSelected
     {
@@ -35,6 +79,10 @@ public class ResidualItem : INotifyPropertyChanged
             if (_isSelected != value)
             {
                 _isSelected = value;
+                if (value)
+                {
+                    IsDemotedByChildUncheck = false;
+                }
                 OnPropertyChanged();
             }
         }
@@ -79,6 +127,7 @@ public class ResidualItem : INotifyPropertyChanged
     public bool HasSourceAppName => !string.IsNullOrWhiteSpace(SourceAppName);
     public bool HasValueName => !string.IsNullOrEmpty(ValueName);
     public bool HasValuePreview => !string.IsNullOrEmpty(ValuePreview);
+    public bool HasDigitalSignature => !string.IsNullOrWhiteSpace(DigitalSignatureInfo);
 
     /// <summary>
     /// Parent directory or registry key prefix (with trailing slash) for muted secondary syntax highlighting.
@@ -134,7 +183,9 @@ public class ResidualItem : INotifyPropertyChanged
         ResidualCategory.ShellExtension => "Apps24",
         ResidualCategory.EnvironmentPath => "Code24",
         ResidualCategory.BrowserExtension => "GlobeSearch24",
+        ResidualCategory.UrlProtocol => "Link24",
         ResidualCategory.DriverPackage => "Wrench24",
+        ResidualCategory.NtfsMftMatch => "HardDrive24",
         _ => Type switch
         {
             ResidualType.Directory => "Folder24",
@@ -155,7 +206,9 @@ public class ResidualItem : INotifyPropertyChanged
         ResidualCategory.ShellExtension => "外壳扩展",
         ResidualCategory.EnvironmentPath => "环境变量",
         ResidualCategory.BrowserExtension => "浏览器扩展",
+        ResidualCategory.UrlProtocol => "协议处理器",
         ResidualCategory.DriverPackage => "驱动组件",
+        ResidualCategory.NtfsMftMatch => "MFT 全盘检出",
         _ => Type switch
         {
             ResidualType.Directory => "文件夹",

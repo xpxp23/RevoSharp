@@ -1,8 +1,7 @@
 <Application x:Class="RevoSharp.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-             StartupUri="Views/MainWindow.xaml">
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
@@ -20,6 +19,8 @@
             <SolidColorBrush x:Key="RevoAccentPurpleBrush" Color="#C395FF" />
             <SolidColorBrush x:Key="RevoAccentAmberBrush" Color="#FFAA44" />
             <SolidColorBrush x:Key="RevoAccentRedBrush" Color="#FF6666" />
+            <SolidColorBrush x:Key="RevoWarningIconBrush" Color="#FF9955" />
+            <SolidColorBrush x:Key="RevoWarningBadgeBgBrush" Color="#28FF6644" />
 
             <SolidColorBrush x:Key="RevoTagBlueBgBrush" Color="#240078D4" />
             <SolidColorBrush x:Key="RevoTagBlueBorderBrush" Color="#4460CDFF" />
@@ -28,6 +29,8 @@
             <SolidColorBrush x:Key="RevoTagGreenBgBrush" Color="#2244DD88" />
             <SolidColorBrush x:Key="RevoTagRedBgBrush" Color="#2EFF4444" />
             <SolidColorBrush x:Key="RevoTagRedBorderBrush" Color="#55FF6666" />
+            <SolidColorBrush x:Key="RevoTagAmberBgBrush" Color="#28FFAA33" />
+            <SolidColorBrush x:Key="RevoTagAmberBorderBrush" Color="#55FFAA33" />
             <SolidColorBrush x:Key="RevoTagNeutralBgBrush" Color="#22FFFFFF" />
 
             <SolidColorBrush x:Key="RevoOverlayMaskBrush" Color="#B8121418" />

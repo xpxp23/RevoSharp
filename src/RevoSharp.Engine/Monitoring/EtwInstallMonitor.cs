@@ -21,7 +21,9 @@ public class EtwInstallMonitor : IDisposable
     private static extern uint QueryDosDevice(string lpDeviceName, StringBuilder lpTargetPath, int ucchMax);
 
     private TraceEventSession? _session;
+    private Task? _etwProcessingTask;
     private readonly HashSet<int> _trackedPids = [];
+    private readonly HashSet<int> _preExistingMsiPids = [];
     private readonly HashSet<string> _createdFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _createdRegistryKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _modifiedRegistryValues = new(StringComparer.OrdinalIgnoreCase);
@@ -36,11 +38,28 @@ public class EtwInstallMonitor : IDisposable
     private DateTime _monitorStartUtc;
     private volatile bool _isMonitoring;
     private volatile bool _installerLaunched;
+    private volatile bool _isMsiInstaller;
 
     public bool IsMonitoring => _isMonitoring;
     public int CapturedFileCount { get { lock (_lock) return _createdFiles.Count; } }
     public int CapturedRegCount { get { lock (_lock) return _createdRegistryKeys.Count + _modifiedRegistryValues.Count; } }
     public int TrackedProcessCount { get { lock (_lock) return _trackedPids.Count; } }
+
+    public bool IsInstallerProcessExited
+    {
+        get
+        {
+            if (!_installerLaunched || _installerProcess == null) return false;
+            try
+            {
+                return _installerProcess.HasExited;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+    }
 
     public event Action<string>? OnItemCaptured;
 
@@ -50,23 +69,27 @@ public class EtwInstallMonitor : IDisposable
         _installerPath = installerPath;
         _monitorStartUtc = DateTime.UtcNow;
         _installerLaunched = false;
+        _isMsiInstaller = installerPath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ||
+                          installerPath.EndsWith(".msp", StringComparison.OrdinalIgnoreCase);
 
         lock (_lock)
         {
             _trackedPids.Clear();
+            _preExistingMsiPids.Clear();
             _createdFiles.Clear();
             _createdRegistryKeys.Clear();
             _modifiedRegistryValues.Clear();
             _kcbHandleToPath.Clear();
         }
 
+        CapturePreExistingMsiProcesses();
         BuildDeviceDriveMap();
         CaptureUninstallSnapshot(_preInstallUninstallKeys);
 
         var sessionReadyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // 1. Start ETW session FIRST so no early installer events are missed
-        var etwTask = Task.Run(() =>
+        _etwProcessingTask = Task.Run(() =>
         {
             try
             {
@@ -93,7 +116,7 @@ public class EtwInstallMonitor : IDisposable
                     );
                 }
 
-                // Track child installer processes AND msiexec service worker processes once installer is active
+                // Track child installer processes AND newly spawned msiexec worker processes once installer is active
                 _session.Source.Kernel.ProcessStart += (ProcessTraceData data) =>
                 {
                     if (!_installerLaunched) return;
@@ -108,7 +131,8 @@ public class EtwInstallMonitor : IDisposable
                                 attachMsiWorkers = true;
                             }
                         }
-                        else if (data.ImageFileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) && _trackedPids.Count > 0)
+                        else if (data.ImageFileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) &&
+                                 (_isMsiInstaller || !_preExistingMsiPids.Contains(data.ProcessID)))
                         {
                             _trackedPids.Add(data.ProcessID);
                         }
@@ -120,7 +144,7 @@ public class EtwInstallMonitor : IDisposable
                     }
                 };
 
-                // Track KCB (Key Control Block) lifecycle (Create, Rundown, Open, and Delete) so recycled KCB handles never cross-pollinate
+                // Track KCB (Key Control Block) lifecycle (Create, Rundown, Open, and Delete)
                 _session.Source.Kernel.RegistryKCBCreate += (RegistryTraceData data) =>
                 {
                     CacheKcbHandle(data.KeyHandle, data.KeyName);
@@ -180,10 +204,10 @@ public class EtwInstallMonitor : IDisposable
                 {
                     lock (_lock)
                     {
-                        CacheKcbHandle(data.KeyHandle, data.KeyName);
+                        CacheKcbHandleNoLock(data.KeyHandle, data.KeyName);
                         if (_trackedPids.Contains(data.ProcessID))
                         {
-                            string fullRaw = ResolveRegistryFullPath(data.KeyHandle, data.KeyName);
+                            string fullRaw = ResolveRegistryFullPathNoLock(data.KeyHandle, data.KeyName);
                             string norm = NormalizeRegistryPath(fullRaw);
                             if (IsValidTargetRegistryKey(norm) && _createdRegistryKeys.Add(norm))
                             {
@@ -200,7 +224,7 @@ public class EtwInstallMonitor : IDisposable
                     {
                         if (_trackedPids.Contains(data.ProcessID))
                         {
-                            string fullRaw = ResolveRegistryFullPath(data.KeyHandle, data.KeyName);
+                            string fullRaw = ResolveRegistryFullPathNoLock(data.KeyHandle, data.KeyName);
                             string normKey = NormalizeRegistryPath(fullRaw);
                             if (IsValidTargetRegistryKey(normKey))
                             {
@@ -229,10 +253,7 @@ public class EtwInstallMonitor : IDisposable
         // 2. Launch the installer process AFTER ETW is actively listening.
         try
         {
-            bool isMsiPackage = installerPath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ||
-                                installerPath.EndsWith(".msp", StringComparison.OrdinalIgnoreCase);
-
-            var psi = isMsiPackage
+            var psi = _isMsiInstaller
                 ? new ProcessStartInfo
                 {
                     FileName = "msiexec.exe",
@@ -254,7 +275,7 @@ public class EtwInstallMonitor : IDisposable
             }
             _installerLaunched = true;
 
-            if (isMsiPackage)
+            if (_isMsiInstaller)
             {
                 AttachRunningMsiExecProcesses();
             }
@@ -266,7 +287,28 @@ public class EtwInstallMonitor : IDisposable
         }
 
         _isMonitoring = true;
-        await etwTask;
+    }
+
+    private void CapturePreExistingMsiProcesses()
+    {
+        try
+        {
+            foreach (var proc in Process.GetProcessesByName("msiexec"))
+            {
+                try
+                {
+                    lock (_lock)
+                    {
+                        _preExistingMsiPids.Add(proc.Id);
+                    }
+                }
+                finally
+                {
+                    proc.Dispose();
+                }
+            }
+        }
+        catch { }
     }
 
     private void AttachRunningMsiExecProcesses()
@@ -279,7 +321,10 @@ public class EtwInstallMonitor : IDisposable
                 {
                     lock (_lock)
                     {
-                        _trackedPids.Add(proc.Id);
+                        if (_isMsiInstaller || !_preExistingMsiPids.Contains(proc.Id))
+                        {
+                            _trackedPids.Add(proc.Id);
+                        }
                     }
                 }
                 finally
@@ -330,22 +375,28 @@ public class EtwInstallMonitor : IDisposable
     private void CacheKcbHandle(ulong handle, string? keyName)
     {
         if (handle == 0 || string.IsNullOrWhiteSpace(keyName)) return;
-        string trimmed = keyName.Trim();
         lock (_lock)
         {
-            if (trimmed.StartsWith(@"\REGISTRY\", StringComparison.OrdinalIgnoreCase))
-            {
-                _kcbHandleToPath[handle] = trimmed;
-            }
-            else if (_kcbHandleToPath.TryGetValue(handle, out string? existingBase) &&
-                     !existingBase.EndsWith("\\" + trimmed, StringComparison.OrdinalIgnoreCase))
-            {
-                _kcbHandleToPath[handle] = $@"{existingBase.TrimEnd('\\')}\{trimmed.TrimStart('\\')}";
-            }
+            CacheKcbHandleNoLock(handle, keyName);
         }
     }
 
-    private string ResolveRegistryFullPath(ulong handle, string? keyName)
+    /// <summary>
+    /// Caches full kernel registry paths (\REGISTRY\...) for KCB handles.
+    /// Does NOT overwrite the parent KCB handle entry when a relative child subkey name is passed,
+    /// preventing sibling subkey path concatenation corruption!
+    /// </summary>
+    private void CacheKcbHandleNoLock(ulong handle, string? keyName)
+    {
+        if (handle == 0 || string.IsNullOrWhiteSpace(keyName)) return;
+        string trimmed = keyName.Trim();
+        if (trimmed.StartsWith(@"\REGISTRY\", StringComparison.OrdinalIgnoreCase))
+        {
+            _kcbHandleToPath[handle] = trimmed;
+        }
+    }
+
+    private string ResolveRegistryFullPathNoLock(ulong handle, string? keyName)
     {
         string raw = keyName?.Trim() ?? string.Empty;
         if (raw.StartsWith(@"\REGISTRY\", StringComparison.OrdinalIgnoreCase))
@@ -391,6 +442,10 @@ public class EtwInstallMonitor : IDisposable
         try
         {
             _session?.Stop();
+            if (_etwProcessingTask != null)
+            {
+                await Task.WhenAny(_etwProcessingTask, Task.Delay(1200));
+            }
             _session?.Dispose();
             _session = null;
         }
@@ -427,8 +482,6 @@ public class EtwInstallMonitor : IDisposable
             };
         }
 
-        // Save a single canonical .revolog.json.gz file (trace_index.json already indexes both AppName and DetectedDisplayName,
-        // avoiding duplicate physical files in the Traced Programs library!)
         string primaryName = !string.IsNullOrWhiteSpace(log.DetectedDisplayName) ? log.DetectedDisplayName : log.AppName;
         string safePrimary = AppLocator.SanitizeFileName(primaryName);
         string logPath = Path.Combine(LogDirectory, $"{safePrimary}.revolog.json.gz");

@@ -13,6 +13,25 @@ public partial class MonitorDialog
         Closing += OnWindowClosing;
     }
 
+    private void OnDialogDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = (!ViewModel.IsMonitoring && e.Data.GetDataPresent(DataFormats.FileDrop))
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnDialogFileDrop(object sender, DragEventArgs e)
+    {
+        if (ViewModel.IsMonitoring || !e.Data.GetDataPresent(DataFormats.FileDrop))
+            return;
+
+        if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+        {
+            ViewModel.ApplyDroppedInstallerPath(files[0]);
+        }
+    }
+
     private void OnWindowClosing(object? sender, CancelEventArgs e)
     {
         if (!_isSavedAndClosing && ViewModel.IsMonitoring)

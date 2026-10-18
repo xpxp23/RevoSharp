@@ -34,6 +34,7 @@ public partial class ResidualReviewWindow
 
         AppNameTextBlock.Text = $"【{app.DisplayName}】深度残留清单";
         Loaded += OnWindowLoadedOnce;
+        Closed += (_, _) => ViewModel.Dispose();
 
         // Ensure right-clicking any TreeViewItem immediately selects it before ContextMenu opens
         RegTreeView.PreviewMouseRightButtonDown += OnTreeViewPreviewMouseRightButtonDown;
@@ -148,6 +149,18 @@ public partial class ResidualReviewWindow
 
         await ViewModel.CleanAllSelectedSilentAsync(() =>
         {
+            string spaceNote = !string.IsNullOrEmpty(ViewModel.LastFreedSpaceDisplay)
+                ? $"，累计释放约 {ViewModel.LastFreedSpaceDisplay} 磁盘空间"
+                : string.Empty;
+            string rebootNote = ViewModel.LastRebootScheduledCount > 0
+                ? $"\n• 其中 {ViewModel.LastRebootScheduledCount} 个被核心驱动锁定的项目已注册在下次系统重启时由内核自动移除。"
+                : string.Empty;
+
+            FluentMessageDialog.ShowInfo(
+                this,
+                "残留清理完成",
+                $"【{ViewModel.TargetApp.DisplayName}】深度清理已完成：\n\n• 成功安全清除 {ViewModel.LastCleanedCount} 项残留{spaceNote}。\n• 所有注册表、计划任务、环境变量与关键文件快照均已生成合并备份档案，可随时在「工具与设置 -> 多级备份还原中心」一键原位还原。{rebootNote}");
+
             Close();
         });
     }

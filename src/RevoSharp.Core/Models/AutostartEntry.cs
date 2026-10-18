@@ -21,6 +21,9 @@ public class AutostartEntry : INotifyPropertyChanged
     public bool FileExists { get; init; }
     public string Publisher { get; init; } = string.Empty;
 
+    public bool IsDeadLink => !FileExists;
+    public string PublisherDisplay => string.IsNullOrWhiteSpace(Publisher) ? (FileExists ? "未知发行商" : "目标文件已丢失 (无效死链)") : Publisher;
+
     public bool IsEnabled
     {
         get => _isEnabled;

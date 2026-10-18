@@ -7,8 +7,8 @@
         xmlns:models="clr-namespace:RevoSharp.Core.Models;assembly=RevoSharp.Core"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
-        Title="深度残留审查与安全清理"
-        Height="760" Width="1240"
+        Title="深度残留审查与安全清理 (v2.4 Pro)"
+        Height="780" Width="1260"
         MinHeight="540" MinWidth="920"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
@@ -74,12 +74,12 @@
 
         <!-- 1. TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="深度残留审查与安全备份清理 (v2.3 Pro)"
+                     Title="深度残留审查与安全备份清理 (v2.4 Pro)"
                      ShowMaximize="True"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Broom24}">
             <ui:TitleBar.Header>
-                <TextBlock Text="Restart Manager 句柄解锁 · 原位合成 .reg 引擎 · 批量回收站事务"
+                <TextBlock Text="NTFS MFT 全盘检索 · 数字签名防误删护栏 · Restart Manager 批量解锁 · 原位合成 .reg"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                            VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
             </ui:TitleBar.Header>
@@ -124,7 +124,7 @@
                         <RadioButton Content="{Binding ServiceAndTaskCount, StringFormat='服务/驱动/任务 ({0})'}"
                                      Style="{StaticResource SegmentedFilterRadioStyle}"
                                      GroupName="CatFilter" Tag="服务与任务" Checked="OnCategoryFilterChecked" />
-                        <RadioButton Content="{Binding ExtensionAndEnvCount, StringFormat='扩展/MSI/环境 ({0})'}"
+                        <RadioButton Content="{Binding ExtensionAndEnvCount, StringFormat='扩展/协议/环境 ({0})'}"
                                      Style="{StaticResource SegmentedFilterRadioStyle}"
                                      GroupName="CatFilter" Tag="扩展与环境" Checked="OnCategoryFilterChecked" />
                         <RadioButton Content="{Binding LockedItemCount, StringFormat='占用锁定 ({0})'}"
@@ -144,10 +144,10 @@
                                    ToolTip="通过 Windows Restart Manager 终止占用进程或平滑重启 Explorer 以立即释放被锁定的文件与外壳扩展 DLL" />
 
                         <TextBlock Text="扫描深度:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
-                        <ComboBox x:Name="ScanModeComboBox" SelectedIndex="1" Width="130" Margin="0,0,8,0" SelectionChanged="OnScanModeChanged">
+                        <ComboBox x:Name="ScanModeComboBox" SelectedIndex="1" Width="150" Margin="0,0,8,0" SelectionChanged="OnScanModeChanged">
                             <ComboBoxItem Content="安全 (Safe)" />
                             <ComboBoxItem Content="中等 (推荐)" />
-                            <ComboBoxItem Content="高级 (深度特征)" />
+                            <ComboBoxItem Content="高级 (含 MFT 全盘)" />
                         </ComboBox>
                         <ui:Button Content="重新扫描" Icon="{ui:SymbolIcon ArrowClockwise24}" Command="{Binding ExecuteScanCommand}" />
                     </StackPanel>
@@ -214,7 +214,7 @@
                 CornerRadius="8"
                 Padding="2">
             <Grid>
-                <!-- Mode A: Flat Direct DataGrid (with Syntax-Highlighted Path, Lock Badges & Single-Click CheckBox) -->
+                <!-- Mode A: Flat Direct DataGrid (Refined Visual Hierarchy, Reduced Tag Noise) -->
                 <ui:DataGrid ItemsSource="{Binding DisplayedResiduals}"
                              SelectedItem="{Binding SelectedResidual}"
                              Visibility="{Binding IsTreeViewMode, Converter={StaticResource InvBoolToVis}}"
@@ -245,19 +245,18 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
 
-                        <DataGridTemplateColumn Header="类别" Width="118" SortMemberPath="TypeDisplay" IsReadOnly="True">
+                        <!-- Clean Icon + Text Category Column without heavy box border clutter -->
+                        <DataGridTemplateColumn Header="类别" Width="116" SortMemberPath="TypeDisplay" IsReadOnly="True">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Border Background="{DynamicResource RevoTagBlueBgBrush}" BorderBrush="{DynamicResource RevoTagBlueBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left" VerticalAlignment="Center">
-                                        <StackPanel Orientation="Horizontal">
-                                            <ui:SymbolIcon Symbol="{Binding DisplayIcon, Converter={StaticResource SymbolConv}}"
-                                                           FontSize="12"
-                                                           Foreground="{DynamicResource RevoAccentCyanBrush}"
-                                                           VerticalAlignment="Center"
-                                                           Margin="0,0,5,0" />
-                                            <TextBlock Text="{Binding TypeDisplay}" FontSize="11" Foreground="{DynamicResource RevoAccentCyanTextBrush}" VerticalAlignment="Center" />
-                                        </StackPanel>
-                                    </Border>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0">
+                                        <ui:SymbolIcon Symbol="{Binding DisplayIcon, Converter={StaticResource SymbolConv}}"
+                                                       FontSize="13.5"
+                                                       Foreground="{DynamicResource RevoAccentCyanBrush}"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding TypeDisplay}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                    </StackPanel>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -281,7 +280,7 @@
                         <DataGridTemplateColumn Header="完整残留路径 / 注册表键与值名称" Width="*" MinWidth="360" SortMemberPath="FullDisplayPath" IsReadOnly="True">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="4,2" ToolTip="{Binding FullDisplayPath}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="4,3" ToolTip="{Binding FullDisplayPath}">
                                         <TextBlock Text="{Binding PathPrefixDisplay}"
                                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                    FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
@@ -351,7 +350,7 @@
                     </DataGrid.Columns>
                 </ui:DataGrid>
 
-                <!-- Mode B: Split Hierarchical TreeView (with UI Virtualization, ContextMenu, Visual Hierarchy & Visible Grip Splitter) -->
+                <!-- Mode B: Split Hierarchical TreeView (with 3-State Indeterminate CheckBox, Size, Confidence & Lock Badges) -->
                 <Grid Visibility="{Binding IsTreeViewMode, Converter={StaticResource BoolToVis}}" Margin="6">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -368,7 +367,7 @@
                             </Grid.RowDefinitions>
                             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,0,0,8">
                                 <ui:SymbolIcon Symbol="Code24" FontSize="15" Foreground="{DynamicResource RevoAccentCyanBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                <TextBlock Text="注册表残留层级树 (支持右键定位与父子保护勾选)" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                                <TextBlock Text="注册表残留层级树 (支持三态半选指示与父子保护)" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
                             </StackPanel>
 
                             <TreeView x:Name="RegTreeView"
@@ -396,7 +395,7 @@
                                 <TreeView.ItemTemplate>
                                     <HierarchicalDataTemplate DataType="{x:Type models:RegistryTreeNode}" ItemsSource="{Binding Children}">
                                         <StackPanel Orientation="Horizontal" Margin="0,2" Opacity="{Binding NodeOpacity}" ToolTip="{Binding FullPath}">
-                                            <CheckBox IsThreeState="False"
+                                            <CheckBox IsThreeState="True"
                                                       IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                       VerticalAlignment="Center" Margin="0,0,6,0" />
                                             <ui:SymbolIcon Symbol="{Binding SymbolIconName, Converter={StaticResource SymbolConv}}"
@@ -409,7 +408,11 @@
                                                        FontWeight="SemiBold"
                                                        FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
                                                        FontSize="12" />
-                                            <Border Background="{DynamicResource RevoTagBlueBgBrush}" CornerRadius="4" Padding="5,1" Margin="8,0,0,0"
+                                            <Border Background="{DynamicResource RevoTagAmberBgBrush}" BorderBrush="{DynamicResource RevoTagAmberBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
+                                                    Visibility="{Binding IsLowConfidence, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="低置信度" FontSize="10" Foreground="{DynamicResource RevoAccentAmberBrush}" FontWeight="SemiBold" />
+                                            </Border>
+                                            <Border Background="{DynamicResource RevoTagBlueBgBrush}" CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
                                                     Visibility="{Binding IsMatched, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="{Binding MatchReason}" FontSize="10" Foreground="{DynamicResource RevoAccentCyanTextBrush}" />
                                             </Border>
@@ -449,7 +452,7 @@
                             </Grid.RowDefinitions>
                             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,0,0,8">
                                 <ui:SymbolIcon Symbol="Folder24" FontSize="15" Foreground="{DynamicResource RevoAccentGreenBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                <TextBlock Text="文件、目录与计划任务层级树 (支持右键打开目录)" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                                <TextBlock Text="文件、目录与计划任务层级树 (含大小、占用与三态保护)" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
                             </StackPanel>
 
                             <TreeView x:Name="FileTreeView"
@@ -477,7 +480,7 @@
                                 <TreeView.ItemTemplate>
                                     <HierarchicalDataTemplate DataType="{x:Type models:FileSystemTreeNode}" ItemsSource="{Binding Children}">
                                         <StackPanel Orientation="Horizontal" Margin="0,2" Opacity="{Binding NodeOpacity}" ToolTip="{Binding FullPath}">
-                                            <CheckBox IsThreeState="False"
+                                            <CheckBox IsThreeState="True"
                                                       IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                       VerticalAlignment="Center" Margin="0,0,6,0" />
                                             <ui:SymbolIcon Symbol="{Binding SymbolIconName, Converter={StaticResource SymbolConv}}"
@@ -490,7 +493,19 @@
                                                        FontWeight="SemiBold"
                                                        FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
                                                        FontSize="12" />
-                                            <Border Background="{DynamicResource RevoTagGreenBgBrush}" CornerRadius="4" Padding="5,1" Margin="8,0,0,0"
+                                            <Border Background="{DynamicResource RevoTagNeutralBgBrush}" CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
+                                                    Visibility="{Binding HasSize, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="{Binding FormattedSize}" FontSize="10" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontFamily="Consolas, Microsoft YaHei UI" />
+                                            </Border>
+                                            <Border Background="{DynamicResource RevoTagAmberBgBrush}" BorderBrush="{DynamicResource RevoTagAmberBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
+                                                    Visibility="{Binding IsLowConfidence, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="低置信度" FontSize="10" Foreground="{DynamicResource RevoAccentAmberBrush}" FontWeight="SemiBold" />
+                                            </Border>
+                                            <Border Background="{DynamicResource RevoTagRedBgBrush}" BorderBrush="{DynamicResource RevoTagRedBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
+                                                    Visibility="{Binding IsLocked, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="{Binding LockedBySummary}" FontSize="10" Foreground="{DynamicResource RevoAccentRedBrush}" FontWeight="SemiBold" />
+                                            </Border>
+                                            <Border Background="{DynamicResource RevoTagGreenBgBrush}" CornerRadius="4" Padding="5,1" Margin="6,0,0,0"
                                                     Visibility="{Binding IsMatched, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="{Binding MatchReason}" FontSize="10" Foreground="{DynamicResource RevoAccentGreenTextBrush}" />
                                             </Border>
@@ -508,7 +523,7 @@
                             Visibility="{Binding DisplayedResiduals.Count, Converter={StaticResource EmptyCountToVis}}">
                     <ui:SymbolIcon Symbol="CheckmarkCircle24" FontSize="42" Foreground="{DynamicResource RevoAccentGreenBrush}" HorizontalAlignment="Center" Margin="0,0,0,8" />
                     <TextBlock Text="当前筛选条件下未发现残留项" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
-                    <TextBlock Text="原厂卸载程序已清理干净，或可切换至“高级 (深度特征)”级别重新扫描" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                    <TextBlock Text="原厂卸载程序已清理干净，或可切换至“高级 (含 MFT 全盘)”级别重新扫描" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
                 </StackPanel>
 
                 <!-- Loading & Real-Time Progress Overlay -->

@@ -209,46 +209,63 @@ public class HunterService
 
     public HunterTargetInfo? InspectFileOrShortcut(string filePath, List<InstalledApp>? installedApps = null)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return null;
+        if (string.IsNullOrWhiteSpace(filePath) || (!File.Exists(filePath) && !Directory.Exists(filePath)))
+            return null;
 
         string resolvedExe = filePath;
-        if (filePath.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+        if (Directory.Exists(filePath))
+        {
+            var topExe = Directory.GetFiles(filePath, "*.exe", SearchOption.TopDirectoryOnly)
+                .FirstOrDefault(f => !Path.GetFileName(f).StartsWith("unins", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(topExe))
+            {
+                resolvedExe = topExe;
+            }
+        }
+        else if (filePath.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
         {
             string? target = ResolveShortcutTarget(filePath);
-            if (!string.IsNullOrEmpty(target) && File.Exists(target))
+            if (!string.IsNullOrEmpty(target) && (File.Exists(target) || Directory.Exists(target)))
             {
                 resolvedExe = target;
             }
         }
 
-        string procName = Path.GetFileName(resolvedExe);
-        string title = Path.GetFileNameWithoutExtension(filePath);
+        bool isDirTarget = Directory.Exists(resolvedExe);
+        string procName = isDirTarget ? Path.GetFileName(resolvedExe.TrimEnd('\\')) : Path.GetFileName(resolvedExe);
+        string title = Path.GetFileNameWithoutExtension(filePath.TrimEnd('\\'));
         string pub = string.Empty;
         string ver = string.Empty;
 
-        try
+        if (!isDirTarget && File.Exists(resolvedExe))
         {
-            var vi = FileVersionInfo.GetVersionInfo(resolvedExe);
-            pub = vi.CompanyName ?? string.Empty;
-            ver = vi.ProductVersion ?? vi.FileVersion ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(vi.FileDescription))
+            try
             {
-                title = vi.FileDescription;
+                var vi = FileVersionInfo.GetVersionInfo(resolvedExe);
+                pub = vi.CompanyName ?? string.Empty;
+                ver = vi.ProductVersion ?? vi.FileVersion ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(vi.FileDescription))
+                {
+                    title = vi.FileDescription;
+                }
             }
+            catch { }
         }
-        catch { }
 
         int pid = 0;
-        try
+        if (!isDirTarget)
         {
-            var procs = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(resolvedExe));
-            if (procs.Length > 0)
+            try
             {
-                pid = procs[0].Id;
-                foreach (var p in procs) p.Dispose();
+                var procs = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(resolvedExe));
+                if (procs.Length > 0)
+                {
+                    pid = procs[0].Id;
+                    foreach (var p in procs) p.Dispose();
+                }
             }
+            catch { }
         }
-        catch { }
 
         string winFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd('\\') + "\\";
         bool isCritical = SystemCriticalProcesses.Contains(procName) ||
@@ -262,7 +279,7 @@ public class HunterService
             ProcessId = pid,
             ProcessName = procName,
             ExecutablePath = resolvedExe,
-            DirectoryPath = Path.GetDirectoryName(resolvedExe) ?? string.Empty,
+            DirectoryPath = isDirTarget ? resolvedExe : (Path.GetDirectoryName(resolvedExe) ?? string.Empty),
             Publisher = pub,
             ProductVersion = ver,
             Architecture = Environment.Is64BitOperatingSystem ? "64 位" : "32 位",
@@ -428,14 +445,14 @@ public class HunterService
             ? info.DirectoryPath.TrimEnd('\\') + "\\"
             : null;
 
-        CheckRegistryRun(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
-        CheckRegistryRun(Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(RegistryHive.CurrentUser, RegistryView.Default, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(RegistryHive.CurrentUser, RegistryView.Default, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(RegistryHive.LocalMachine, RegistryView.Registry64, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+        CheckRegistryRun(RegistryHive.LocalMachine, RegistryView.Registry64, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
 
         if (Environment.Is64BitOperatingSystem)
         {
-            CheckRegistryRun(Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
+            CheckRegistryRun(RegistryHive.LocalMachine, RegistryView.Registry32, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run", exeName, exePath, safeDirPrefix, info.AutostartDescriptions);
         }
 
         string userStartup = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
@@ -463,14 +480,12 @@ public class HunterService
         if (!string.IsNullOrEmpty(safeDirPrefix) && commandValue.Contains(safeDirPrefix, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        // Guard against collateral false positives on generic binary names like update.exe or app.exe!
         if (GenericBinaryNames.Contains(exeName))
             return false;
 
         string extracted = AppLocator.ExtractExeFromCommand(commandValue);
         if (!string.IsNullOrEmpty(extracted))
         {
-            // If the command points to an existing executable in a different directory, do NOT match it
             if (File.Exists(extracted) && !extracted.Equals(exePath, StringComparison.OrdinalIgnoreCase))
                 return false;
 
@@ -481,7 +496,8 @@ public class HunterService
     }
 
     private static void CheckRegistryRun(
-        RegistryKey root,
+        RegistryHive hive,
+        RegistryView view,
         string hiveShort,
         string subKey,
         string exeName,
@@ -491,14 +507,18 @@ public class HunterService
     {
         try
         {
-            using var key = root.OpenSubKey(subKey);
+            using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+            using var key = baseKey.OpenSubKey(subKey);
             if (key == null) return;
             foreach (var valName in key.GetValueNames())
             {
                 string? val = key.GetValue(valName)?.ToString();
                 if (IsAutostartCommandMatchingTarget(val, exeName, exePath, safeDirPrefix))
                 {
-                    list.Add($"{hiveShort}\\{subKey} -> [{valName}]");
+                    string displaySub = view == RegistryView.Registry32
+                        ? @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
+                        : subKey;
+                    list.Add($"{hiveShort}\\{displaySub} -> [{valName}]");
                 }
             }
         }
@@ -753,28 +773,35 @@ public class HunterService
     {
         var entries = new List<AutostartEntry>();
 
-        var regSources = new (RegistryKey Root, string HiveName, string SubKey, string ApprovedSubKey, string Label, bool Is64View)[]
+        var regSources = new (RegistryHive Hive, RegistryView View, string HiveName, string SubKey, string ApprovedSubKey, string Label, bool Is64View)[]
         {
-            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run",
+            (RegistryHive.CurrentUser, RegistryView.Default, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\Run",
                 @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run", "当前用户 Run", true),
-            (Registry.CurrentUser, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            (RegistryHive.CurrentUser, RegistryView.Default, "HKCU", @"Software\Microsoft\Windows\CurrentVersion\RunOnce",
                 string.Empty, "当前用户 RunOnce", true),
-            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run",
+            (RegistryHive.LocalMachine, RegistryView.Registry64, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run",
                 @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run", "系统全局 Run (x64)", true),
-            (Registry.LocalMachine, "HKLM", @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+            (RegistryHive.LocalMachine, RegistryView.Registry32, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\Run",
                 @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32", "系统全局 Run (x86)", false),
-            (Registry.LocalMachine, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            (RegistryHive.LocalMachine, RegistryView.Registry64, "HKLM", @"Software\Microsoft\Windows\CurrentVersion\RunOnce",
                 string.Empty, "系统全局 RunOnce", true)
         };
 
-        foreach (var (root, hiveName, subKey, approvedSubKey, label, is64View) in regSources)
+        foreach (var (hive, view, hiveName, subKey, approvedSubKey, label, is64View) in regSources)
         {
             if (!Environment.Is64BitOperatingSystem && !is64View) continue;
 
             try
             {
-                using var key = root.OpenSubKey(subKey);
+                using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                using var key = baseKey.OpenSubKey(subKey);
                 if (key == null) continue;
+                using var approvedBase = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64);
+
+                string recordedSubKey = !is64View
+                    ? @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
+                    : subKey;
+
                 foreach (var valName in key.GetValueNames())
                 {
                     string cmd = key.GetValue(valName)?.ToString() ?? string.Empty;
@@ -788,7 +815,7 @@ public class HunterService
                         try { pub = FileVersionInfo.GetVersionInfo(exe).CompanyName ?? string.Empty; } catch { }
                     }
 
-                    bool isEnabled = IsStartupApprovedEnabled(root, approvedSubKey, valName);
+                    bool isEnabled = IsStartupApprovedEnabled(approvedBase, approvedSubKey, valName);
 
                     entries.Add(new AutostartEntry
                     {
@@ -796,9 +823,9 @@ public class HunterService
                         Command = cmd,
                         ExecutablePath = exe,
                         LocationType = label,
-                        FullLocation = $@"{hiveName}\{subKey} [{valName}]",
+                        FullLocation = $@"{hiveName}\{recordedSubKey} [{valName}]",
                         RegistryHiveName = hiveName,
-                        RegistrySubKey = subKey,
+                        RegistrySubKey = recordedSubKey,
                         Is64BitRegistryView = is64View,
                         IsStartupShortcut = false,
                         FileExists = exists,
@@ -877,7 +904,7 @@ public class HunterService
             {
                 IgnoreInaccessible = true,
                 RecurseSubdirectories = true,
-                MaxRecursionDepth = 2
+                MaxRecursionDepth = 3
             }))
             {
                 string relPath = taskFile.Substring(tasksDir.Length).TrimStart('\\');
@@ -892,7 +919,6 @@ public class HunterService
                     var doc = XDocument.Load(taskFile);
                     XNamespace ns = doc.Root?.Name.Namespace ?? XNamespace.None;
 
-                    // Critical fix: Tasks with no <Triggers> or empty <Triggers /> are on-demand tasks and MUST be skipped!
                     var triggersElement = doc.Descendants(ns + "Triggers").FirstOrDefault();
                     if (triggersElement == null ||
                         !triggersElement.Elements().Any(el => AutostartTriggerElementNames.Contains(el.Name.LocalName)))
@@ -950,7 +976,8 @@ public class HunterService
             using var key = root.OpenSubKey(approvedSubKey, false);
             if (key?.GetValue(itemName) is byte[] data && data.Length >= 4)
             {
-                return data[0] == 0x02 || data[0] == 0x06 || data[0] == 0x00;
+                // Per Windows Shell StartupApproved specification: even first byte = enabled, odd first byte = disabled
+                return (data[0] & 1) == 0;
             }
         }
         catch { }

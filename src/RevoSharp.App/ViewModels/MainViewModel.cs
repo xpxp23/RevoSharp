@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RevoSharp.App.Converters;
 using RevoSharp.Core.Models;
+using RevoSharp.Core.Serialization;
 using RevoSharp.Engine.Discovery;
 using RevoSharp.Engine.Execution;
 using RevoSharp.Engine.Safety;
@@ -45,6 +46,9 @@ public partial class MainViewModel : ObservableObject
     private bool _includeWindowsApps;
 
     [ObservableProperty]
+    private bool _blockUninstallSurveyWebpages = true;
+
+    [ObservableProperty]
     private bool _isLoading;
 
     [ObservableProperty]
@@ -72,9 +76,15 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        var cfg = SettingsSerializer.Current;
+        _includeWindowsApps = cfg.IncludeWindowsApps;
+        _isInspectorOpen = cfg.IsInspectorOpen;
+        _blockUninstallSurveyWebpages = cfg.BlockUninstallSurveyWebpages;
+        _currentThemeButtonText = $"主题: {App.CurrentThemeDisplay}";
+
         _searchDebounceTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(140)
+            Interval = TimeSpan.FromMilliseconds(120)
         };
         _searchDebounceTimer.Tick += (_, _) =>
         {
@@ -99,12 +109,39 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnIncludeWindowsAppsChanged(bool value)
     {
+        SettingsSerializer.Current.IncludeWindowsApps = value;
+        SettingsSerializer.Save();
         _ = LoadAppsAsync();
+    }
+
+    partial void OnBlockUninstallSurveyWebpagesChanged(bool value)
+    {
+        SettingsSerializer.Current.BlockUninstallSurveyWebpages = value;
+        SettingsSerializer.Save();
+        StatusText = value
+            ? "已开启：卸载期间将自动拦截原厂卸载程序拉起的浏览器调查问卷弹窗"
+            : "已关闭卸载调查问卷网页拦截";
+    }
+
+    partial void OnIsInspectorOpenChanged(bool value)
+    {
+        SettingsSerializer.Current.IsInspectorOpen = value;
+        SettingsSerializer.Save();
     }
 
     partial void OnMultiSelectedCountChanged(int value)
     {
         OnPropertyChanged(nameof(IsMultiSelectionActive));
+    }
+
+    public void SyncSettingsState()
+    {
+        var cfg = SettingsSerializer.Current;
+        if (BlockUninstallSurveyWebpages != cfg.BlockUninstallSurveyWebpages)
+        {
+            BlockUninstallSurveyWebpages = cfg.BlockUninstallSurveyWebpages;
+        }
+        CurrentThemeButtonText = $"主题: {App.CurrentThemeDisplay}";
     }
 
     public void UpdateMultiSelection(IReadOnlyCollection<InstalledApp> selectedApps)
@@ -135,7 +172,7 @@ public partial class MainViewModel : ObservableObject
     {
         string modeName = App.CycleThemeMode();
         CurrentThemeButtonText = $"主题: {modeName}";
-        StatusText = $"已切换界面主题模式为：{modeName}";
+        StatusText = $"已切换界面主题模式为：{modeName}（已保存至本地配置）";
     }
 
     [RelayCommand]
@@ -152,6 +189,10 @@ public partial class MainViewModel : ObservableObject
         {
             string? previousSelectedId = SelectedApp?.Id;
             _allApps = await _appLocator.GetInstalledAppsAsync(IncludeWindowsApps);
+
+            // Hydrate already-cached icons synchronously (<1ms) so refreshing never causes icon flicker!
+            AppIconConverter.HydrateCachedIconsImmediate(_allApps);
+
             NotifyCategoryCounts();
             ApplyFilter();
 
@@ -165,7 +206,7 @@ public partial class MainViewModel : ObservableObject
             int recentCount = _allApps.Count(a => a.IsRecentlyInstalled);
             StatusText = $"共发现 {_allApps.Count} 款程序（近期新装 {recentCount} 款 · 已关联监控日志 {tracedCount} 款）";
 
-            // Preload app icons and missing folder sizes in background workers with batched UI thread dispatching
+            // Preload remaining app icons and missing folder sizes in background workers with batched UI thread dispatching
             AppIconConverter.PreloadIconsInBackground(
                 _allApps,
                 token,
@@ -305,6 +346,18 @@ public partial class MainViewModel : ObservableObject
         {
             Clipboard.SetText(SelectedApp.InstallLocation);
             StatusText = $"已复制安装路径: {SelectedApp.InstallLocation}";
+        }
+        catch { }
+    }
+
+    [RelayCommand]
+    public void CopyRegistryKeyPath()
+    {
+        if (SelectedApp == null || string.IsNullOrWhiteSpace(SelectedApp.RegistryKeyPath)) return;
+        try
+        {
+            Clipboard.SetText(SelectedApp.RegistryKeyPath);
+            StatusText = $"已复制注册表路径: {SelectedApp.RegistryKeyPath}";
         }
         catch { }
     }

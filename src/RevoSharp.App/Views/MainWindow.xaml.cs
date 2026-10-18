@@ -1,8 +1,10 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using RevoSharp.App.Views.Hunter;
 using RevoSharp.Core.Models;
+using RevoSharp.Core.Serialization;
 using RevoSharp.Engine.Execution;
 using RevoSharp.Engine.Hunter;
 using RevoSharp.Engine.Safety;
@@ -13,10 +15,34 @@ namespace RevoSharp.App.Views;
 public partial class MainWindow
 {
     private HunterTargetWindow? _hunterTargetWindow;
+    private bool _startupHuntProcessed;
 
     public MainWindow()
     {
         InitializeComponent();
+
+        var cfg = SettingsSerializer.Current;
+        if (cfg.WindowWidth >= MinWidth && cfg.WindowWidth <= SystemParameters.WorkArea.Width)
+        {
+            Width = cfg.WindowWidth;
+        }
+        if (cfg.WindowHeight >= MinHeight && cfg.WindowHeight <= SystemParameters.WorkArea.Height)
+        {
+            Height = cfg.WindowHeight;
+        }
+
+        Loaded += OnMainWindowLoaded;
+
+        Closing += (_, _) =>
+        {
+            if (WindowState == WindowState.Normal)
+            {
+                SettingsSerializer.Current.WindowWidth = Width;
+                SettingsSerializer.Current.WindowHeight = Height;
+                SettingsSerializer.Save();
+            }
+        };
+
         Closed += (_, _) =>
         {
             try
@@ -26,6 +52,66 @@ public partial class MainWindow
             catch { }
             Application.Current?.Shutdown();
         };
+    }
+
+    private async void OnMainWindowLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_startupHuntProcessed || string.IsNullOrWhiteSpace(App.StartupHuntTargetPath))
+            return;
+
+        _startupHuntProcessed = true;
+        string targetPath = App.StartupHuntTargetPath;
+        if (!File.Exists(targetPath) && !Directory.Exists(targetPath))
+            return;
+
+        // Wait briefly for the initial installed apps scan to finish so target matching has full context
+        while (ViewModel.IsLoading)
+        {
+            await Task.Delay(60);
+        }
+
+        var hunterService = new HunterService();
+        var targetInfo = await Task.Run(() => hunterService.InspectFileOrShortcut(targetPath, ViewModel.AllApps.ToList()));
+        if (targetInfo == null) return;
+
+        if (targetInfo.IsSystemCritical)
+        {
+            FluentMessageDialog.ShowInfo(this, "系统核心保护", targetInfo.SystemProtectionReason);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(targetInfo.EffectiveApp.UninstallString))
+        {
+            bool runOfficialFirst = FluentMessageDialog.ShowConfirm(
+                this,
+                "右键强力卸载目标确认",
+                $"已定位目标程序：【{targetInfo.EffectiveApp.DisplayName}】\n路径：{targetInfo.ExecutablePath}\n\n检测到该程序包含原厂卸载引导器，推荐先执行原厂卸载再深度清扫残留（也可选择直接强制扫描残留）：",
+                confirmText: "先卸载再扫残留 (推荐)",
+                cancelText: "跳过卸载，直接扫残留",
+                isWarningOrDanger: false);
+
+            if (runOfficialFirst)
+            {
+                await RunUninstallQueueAsync([targetInfo.EffectiveApp], forceInteractive: true);
+                return;
+            }
+        }
+
+        if (targetInfo.ProcessId > 4)
+        {
+            await Task.Run(() => hunterService.KillProcessTree(targetInfo.ProcessId));
+        }
+
+        var reviewWindow = new ResidualReviewWindow(
+            targetInfo.EffectiveApp,
+            initialResiduals: null,
+            initialScanMode: SettingsSerializer.Current.DefaultScanMode,
+            otherInstalledApps: ViewModel.AllApps)
+        {
+            Owner = this
+        };
+        reviewWindow.ShowDialog();
+        await ViewModel.LoadAppsAsync();
     }
 
     private void OnAppCategoryFilterChecked(object sender, RoutedEventArgs e)
@@ -90,7 +176,11 @@ public partial class MainWindow
         WindowState = WindowState.Normal;
         Activate();
 
-        var window = new ResidualReviewWindow(app, residuals, otherInstalledApps: ViewModel.AllApps)
+        var window = new ResidualReviewWindow(
+            app,
+            residuals,
+            initialScanMode: SettingsSerializer.Current.DefaultScanMode,
+            otherInstalledApps: ViewModel.AllApps)
         {
             Owner = this
         };
@@ -164,6 +254,7 @@ public partial class MainWindow
         bool isMultiQueue = queue.Count > 1;
         var aggregatedBatchResiduals = new List<ResidualItem>();
         var remainingInstalled = ViewModel.AllApps.Where(a => !queue.Any(q => q.Id == a.Id)).ToList();
+        var processedAppNames = new List<string>();
 
         if (isMultiQueue)
         {
@@ -215,10 +306,15 @@ public partial class MainWindow
                 }
             }
 
+            processedAppNames.Add(app.DisplayName);
+
             if (isMultiQueue)
             {
                 ViewModel.StatusText = $"正在后台扫描【{app.DisplayName}】({index + 1}/{queue.Count}) 的残留项...";
-                var appResiduals = await ViewModel.ResidualScanner.ScanResidualsAsync(app, otherInstalledApps: remainingInstalled);
+                var appResiduals = await ViewModel.ResidualScanner.ScanResidualsAsync(
+                    app,
+                    SettingsSerializer.Current.DefaultScanMode,
+                    otherInstalledApps: remainingInstalled);
                 foreach (var item in appResiduals)
                 {
                     item.SourceAppName = app.DisplayName;
@@ -227,7 +323,11 @@ public partial class MainWindow
             }
             else
             {
-                var reviewWindow = new ResidualReviewWindow(app, otherInstalledApps: ViewModel.AllApps)
+                var reviewWindow = new ResidualReviewWindow(
+                    app,
+                    initialResiduals: null,
+                    initialScanMode: SettingsSerializer.Current.DefaultScanMode,
+                    otherInstalledApps: ViewModel.AllApps)
                 {
                     Owner = this
                 };
@@ -235,18 +335,34 @@ public partial class MainWindow
             }
         }
 
-        if (isMultiQueue && aggregatedBatchResiduals.Count > 0)
+        if (isMultiQueue && processedAppNames.Count > 0)
         {
-            var combinedApp = new InstalledApp
+            if (aggregatedBatchResiduals.Count > 0)
             {
-                Id = "Batch_Combined",
-                DisplayName = $"批量卸载汇总 ({queue.Count} 款程序)"
-            };
-            var batchReviewWindow = new ResidualReviewWindow(combinedApp, aggregatedBatchResiduals, otherInstalledApps: remainingInstalled)
+                string joinedNames = string.Join("、", processedAppNames.Take(3)) +
+                                     (processedAppNames.Count > 3 ? $" 等 {processedAppNames.Count} 款" : string.Empty);
+                var combinedApp = new InstalledApp
+                {
+                    Id = "Batch_Combined",
+                    DisplayName = $"批量卸载 ({joinedNames})"
+                };
+                var batchReviewWindow = new ResidualReviewWindow(
+                    combinedApp,
+                    aggregatedBatchResiduals,
+                    initialScanMode: SettingsSerializer.Current.DefaultScanMode,
+                    otherInstalledApps: remainingInstalled)
+                {
+                    Owner = this
+                };
+                batchReviewWindow.ShowDialog();
+            }
+            else
             {
-                Owner = this
-            };
-            batchReviewWindow.ShowDialog();
+                FluentMessageDialog.ShowInfo(
+                    this,
+                    "批量卸载完成",
+                    $"已完成 {processedAppNames.Count} 款程序的队列卸载，原厂卸载程序均已清理干净，未检测到遗留文件或注册表残余！");
+            }
         }
 
         await ViewModel.LoadAppsAsync();
@@ -255,7 +371,11 @@ public partial class MainWindow
     private void OnDirectScanResidualsClick(object sender, RoutedEventArgs e)
     {
         if (ViewModel.SelectedApp == null) return;
-        var window = new ResidualReviewWindow(ViewModel.SelectedApp, otherInstalledApps: ViewModel.AllApps)
+        var window = new ResidualReviewWindow(
+            ViewModel.SelectedApp,
+            initialResiduals: null,
+            initialScanMode: SettingsSerializer.Current.DefaultScanMode,
+            otherInstalledApps: ViewModel.AllApps)
         {
             Owner = this
         };
@@ -294,13 +414,18 @@ public partial class MainWindow
 
         if (toolkit.ShowDialog() == true && toolkit.AppToCleanFromLog != null)
         {
-            var reviewWindow = new ResidualReviewWindow(toolkit.AppToCleanFromLog, otherInstalledApps: ViewModel.AllApps)
+            var reviewWindow = new ResidualReviewWindow(
+                toolkit.AppToCleanFromLog,
+                initialResiduals: null,
+                initialScanMode: SettingsSerializer.Current.DefaultScanMode,
+                otherInstalledApps: ViewModel.AllApps)
             {
                 Owner = this
             };
             reviewWindow.ShowDialog();
         }
 
+        ViewModel.SyncSettingsState();
         _ = ViewModel.LoadAppsAsync();
     }
 

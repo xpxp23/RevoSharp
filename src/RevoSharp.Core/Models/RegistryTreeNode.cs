@@ -20,6 +20,7 @@ public class RegistryTreeNode : INotifyPropertyChanged
 
     public bool IsContainerOnly => !IsMatched;
     public double NodeOpacity => IsMatched ? 1.0 : 0.72;
+    public bool IsLowConfidence => AssociatedItem?.Confidence == ConfidenceLevel.Low;
 
     private bool? _isChecked = true;
     public bool? IsChecked
@@ -30,11 +31,13 @@ public class RegistryTreeNode : INotifyPropertyChanged
             bool targetValue = value ?? false;
             if (_isChecked != targetValue)
             {
+                using var _ = TreeSelectionSyncScope.BeginBatch();
                 _isChecked = targetValue;
                 OnPropertyChanged(nameof(IsChecked));
 
                 if (AssociatedItem != null)
                 {
+                    AssociatedItem.IsDemotedByChildUncheck = false;
                     AssociatedItem.IsSelected = targetValue;
                 }
 
@@ -44,6 +47,10 @@ public class RegistryTreeNode : INotifyPropertyChanged
                 }
 
                 Parent?.RecalculateCheckStateFromChildren();
+            }
+            else if (value == null && _isChecked == true)
+            {
+                OnPropertyChanged(nameof(IsChecked));
             }
         }
     }
@@ -72,6 +79,7 @@ public class RegistryTreeNode : INotifyPropertyChanged
 
         if (AssociatedItem != null)
         {
+            AssociatedItem.IsDemotedByChildUncheck = false;
             AssociatedItem.IsSelected = isChecked;
         }
 
@@ -99,6 +107,7 @@ public class RegistryTreeNode : INotifyPropertyChanged
 
             if (!allChildrenChecked && AssociatedItem != null && AssociatedItem.IsSelected)
             {
+                AssociatedItem.IsDemotedByChildUncheck = !allChildrenUnchecked;
                 AssociatedItem.IsSelected = false;
             }
 
@@ -106,6 +115,11 @@ public class RegistryTreeNode : INotifyPropertyChanged
             bool isAllTrue = allChildrenChecked && (selfState ?? true);
             bool isAllFalse = allChildrenUnchecked && !(selfState ?? false);
             bool? computed = isAllTrue ? true : (isAllFalse ? false : null);
+
+            if (AssociatedItem != null && computed == null)
+            {
+                AssociatedItem.IsDemotedByChildUncheck = true;
+            }
 
             if (_isChecked != computed)
             {
@@ -134,6 +148,7 @@ public class RegistryTreeNode : INotifyPropertyChanged
 
         if (AssociatedItem != null)
         {
+            AssociatedItem.IsDemotedByChildUncheck = newState == null;
             AssociatedItem.IsSelected = newState == true;
         }
 
@@ -157,6 +172,7 @@ public class RegistryTreeNode : INotifyPropertyChanged
         ResidualCategory.MsiMetadata => "Box24",
         ResidualCategory.EnvironmentPath => "Code24",
         ResidualCategory.BrowserExtension => "GlobeSearch24",
+        ResidualCategory.UrlProtocol => "Link24",
         ResidualCategory.DriverPackage => "Wrench24",
         ResidualCategory.RegistryValue => "Tag24",
         _ => "Code24"
@@ -170,6 +186,7 @@ public class RegistryTreeNode : INotifyPropertyChanged
         ResidualCategory.MsiMetadata => "📦",
         ResidualCategory.EnvironmentPath => "🌐",
         ResidualCategory.BrowserExtension => "🧭",
+        ResidualCategory.UrlProtocol => "🔗",
         ResidualCategory.DriverPackage => "🔧",
         ResidualCategory.RegistryValue => "🏷️",
         _ => "🔑"

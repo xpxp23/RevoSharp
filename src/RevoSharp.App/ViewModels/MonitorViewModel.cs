@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
-using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -18,6 +17,7 @@ public partial class MonitorViewModel : ObservableObject
     private readonly Queue<string> _allCapturedHistory = new(1600);
     private readonly DispatcherTimer _flushTimer;
     private readonly Stopwatch _elapsedStopwatch = new();
+    private bool _installerExitNotified;
 
     [ObservableProperty]
     private string _installerPath = string.Empty;
@@ -47,7 +47,7 @@ public partial class MonitorViewModel : ObservableObject
     private string _elapsedTimeDisplay = "00:00";
 
     [ObservableProperty]
-    private string _statusText = "请选择安装包（安装完成后可点击“试运行新软件”一并捕获首次启动配置）";
+    private string _statusText = "请选择或拖入安装包（安装完成后可点击“试运行新软件”一并捕获首次启动配置）";
 
     [ObservableProperty]
     private ObservableCollection<string> _recentEvents = [];
@@ -73,6 +73,19 @@ public partial class MonitorViewModel : ObservableObject
         RebuildFilteredEvents();
     }
 
+    public void ApplyDroppedInstallerPath(string filePath)
+    {
+        if (IsMonitoring || string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return;
+
+        InstallerPath = filePath;
+        if (string.IsNullOrWhiteSpace(AppName))
+        {
+            AppName = Path.GetFileNameWithoutExtension(filePath);
+        }
+        StatusText = $"已载入安装包：{Path.GetFileName(filePath)}，点击“开始监视安装”即可启动内核追踪。";
+    }
+
     private void OnFlushTimerTick(object? sender, EventArgs e)
     {
         if (_monitor == null) return;
@@ -82,13 +95,18 @@ public partial class MonitorViewModel : ObservableObject
         TrackedProcesses = _monitor.TrackedProcessCount;
         ElapsedTimeDisplay = _elapsedStopwatch.Elapsed.ToString(@"mm\:ss");
 
+        if (!_installerExitNotified && _monitor.IsInstallerProcessExited)
+        {
+            _installerExitNotified = true;
+            StatusText = "检测到安装向导主进程已退出！可点击「试运行新软件」捕获首次启动配置，或直接点击「完成安装并保存日志」。";
+        }
+
         if (IsStreamPaused) return;
 
         bool anyAdded = false;
         int dequeuedCount = 0;
         while (_eventQueue.TryDequeue(out string? item))
         {
-            // Use Queue.Dequeue() O(1) instead of List.RemoveAt(0) O(N) array shift
             _allCapturedHistory.Enqueue(item);
             while (_allCapturedHistory.Count > 1500)
             {
@@ -156,12 +174,7 @@ public partial class MonitorViewModel : ObservableObject
 
         if (dialog.ShowDialog() == true)
         {
-            InstallerPath = dialog.FileName;
-            if (string.IsNullOrWhiteSpace(AppName))
-            {
-                AppName = Path.GetFileNameWithoutExtension(dialog.FileName);
-            }
-            StatusText = "已就绪，点击“开始监视安装”将先建立 ETW 内核会话再启动安装程序。";
+            ApplyDroppedInstallerPath(dialog.FileName);
         }
     }
 
@@ -181,6 +194,7 @@ public partial class MonitorViewModel : ObservableObject
 
         IsMonitoring = true;
         IsStreamPaused = false;
+        _installerExitNotified = false;
         StatusText = "正在初始化 ETW 内核追踪会话并启动安装程序...";
         ClearEvents();
 
@@ -196,6 +210,7 @@ public partial class MonitorViewModel : ObservableObject
         try
         {
             await _monitor.StartAsync(InstallerPath, AppName);
+            StatusText = "ETW 内核监控已就绪，安装向导运行中...";
         }
         catch (Exception ex)
         {

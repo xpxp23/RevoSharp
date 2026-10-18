@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         mc:Ignorable="d"
-        Title="正在执行卸载"
+        Title="正在执行卸载 (v2.4 Pro)"
         Height="370" Width="660"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
@@ -21,7 +21,7 @@
 
         <!-- 1. TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="原厂卸载进程监控"
+                     Title="原厂卸载进程监控 (v2.4 Pro)"
                      ShowMaximize="False"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Delete24}" />
@@ -64,7 +64,7 @@
                         <ui:ProgressRing Grid.Column="0" Width="28" Height="28" IsIndeterminate="True" Margin="0,0,12,0" />
                         <StackPanel Grid.Column="1" VerticalAlignment="Center">
                             <TextBlock x:Name="StatusTextBlock" Text="正在启动并等待卸载引导程序..." FontSize="13" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="实时监控中：已关联多层衍生子进程树与安装目录活动" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="11" Margin="0,2,0,0" />
+                            <TextBlock Text="实时监控中：已关联衍生子进程树、安装目录活动与卸载后调查问卷网页拦截" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="11" Margin="0,2,0,0" />
                         </StackPanel>
                     </Grid>
                 </Border>

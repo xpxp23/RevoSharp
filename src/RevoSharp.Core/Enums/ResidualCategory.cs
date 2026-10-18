@@ -14,5 +14,7 @@ public enum ResidualCategory
     ShellExtension,
     EnvironmentPath,
     BrowserExtension,
-    DriverPackage
+    DriverPackage,
+    UrlProtocol,
+    NtfsMftMatch
 }

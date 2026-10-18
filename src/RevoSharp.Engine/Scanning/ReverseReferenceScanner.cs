@@ -1,5 +1,7 @@
 using System.IO;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Microsoft.Win32;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
@@ -22,6 +24,14 @@ public class ReverseReferenceScanner
     private static readonly object ClsidCacheLock = new();
 
     private static readonly Regex OemInfRegex = new(@"oem\d+\.inf", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly HashSet<string> StandardSystemProtocols = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "http", "https", "ftp", "mailto", "file", "ldap", "news", "nntp", "telnet", "rlogin",
+        "tn3270", "gopher", "about", "javascript", "vbscript", "mk", "res", "its", "ms-help",
+        "ms-settings", "ms-windows-store", "ms-appinstaller", "ms-edge", "microsoft-edge",
+        "bingmaps", "calculator", "msnweather", "tel", "sms", "callto", "webcal", "feed"
+    };
 
     public void ScanReferences(TargetProfile profile, List<ResidualItem> results)
     {
@@ -51,7 +61,7 @@ public class ReverseReferenceScanner
         // 5. Scan MuiCache
         ScanMuiCache(profile, results);
 
-        // 6. Scan Windows Scheduled Tasks (with TaskSchedulerName for clean schtasks unregistration)
+        // 6. Scan Windows Scheduled Tasks (parsing XML <Command>/<Arguments>/<WorkingDirectory> accurately)
         ScanScheduledTasks(profile, results);
 
         // 7. Scan MSI Installer Database (msi.dll APIs, packed GUID components, and Installer\Folders)
@@ -63,8 +73,10 @@ public class ReverseReferenceScanner
         // 9. Scan System & User PATH Environment Variables for orphaned directory dead-links
         ScanEnvironmentPaths(profile, results);
 
-        // 10. Scan Browser Extensions, NativeMessagingHosts, and Enterprise Policies (Chrome / Edge / Brave / Firefox)
+        // 10. Scan Browser Extensions, Multi-Profile Local Storage/IndexedDB, Firefox Profiles & Custom URL Protocols
         ScanBrowserExtensionsAndPolicies(profile, matchedClsids, results);
+        ScanBrowserMultiProfileExtensionsAndStorage(profile, results);
+        ScanCustomUrlProtocols(profile, results);
     }
 
     private static void ScanClsidHives(TargetProfile profile, HashSet<string> matchedClsids, List<ResidualItem> results)
@@ -191,7 +203,7 @@ public class ReverseReferenceScanner
                     {
                         Type = ResidualType.RegistryKey,
                         Category = isKernelOrFsDriver ? ResidualCategory.DriverPackage : ResidualCategory.Service,
-                        ValueName = serviceName,
+                        ServiceName = serviceName,
                         ValuePreview = imagePath,
                         DriverPublishedInfName = oemInf,
                         Path = fullKey,
@@ -321,7 +333,7 @@ public class ReverseReferenceScanner
             catch { }
         }
 
-        // 2. Enterprise Policy ExtensionInstallForcelist & Software\Policies vendor keys
+        // 2. Enterprise Policy ExtensionInstallForcelist & External Extensions registry keys
         var policyBrowsers = new[]
         {
             @"SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist",
@@ -358,6 +370,266 @@ public class ReverseReferenceScanner
                             });
                         }
                     }
+                }
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// Scans Chromium (Chrome, Edge, Brave, Vivaldi) multi-profile Extensions (including _locales i18n message resolution),
+    /// Local/Sync Extension Settings, IndexedDB, and Firefox profile extensions.json for companion plugins.
+    /// </summary>
+    private static void ScanBrowserMultiProfileExtensionsAndStorage(TargetProfile profile, List<ResidualItem> results)
+    {
+        if (string.IsNullOrWhiteSpace(profile.DisplayName) || profile.DisplayName.Length < 4)
+            return;
+
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrEmpty(localAppData))
+        {
+            var chromiumUserDataRoots = new (string BrowserLabel, string UserDataPath)[]
+            {
+                ("Chrome", Path.Combine(localAppData, @"Google\Chrome\User Data")),
+                ("Edge", Path.Combine(localAppData, @"Microsoft\Edge\User Data")),
+                ("Brave", Path.Combine(localAppData, @"BraveSoftware\Brave-Browser\User Data")),
+                ("Vivaldi", Path.Combine(localAppData, @"Vivaldi\User Data"))
+            };
+
+            foreach (var (browserLabel, userDataDir) in chromiumUserDataRoots)
+            {
+                if (!Directory.Exists(userDataDir)) continue;
+
+                try
+                {
+                    var profileDirs = Directory.GetDirectories(userDataDir)
+                        .Where(d =>
+                        {
+                            string name = Path.GetFileName(d);
+                            return name.Equals("Default", StringComparison.OrdinalIgnoreCase) ||
+                                   name.StartsWith("Profile ", StringComparison.OrdinalIgnoreCase);
+                        });
+
+                    foreach (var profDir in profileDirs)
+                    {
+                        string profName = Path.GetFileName(profDir);
+                        string extRoot = Path.Combine(profDir, "Extensions");
+                        if (!Directory.Exists(extRoot)) continue;
+
+                        foreach (var extIdDir in Directory.GetDirectories(extRoot))
+                        {
+                            string extId = Path.GetFileName(extIdDir);
+                            if (TryMatchChromiumExtensionManifest(extIdDir, profile, out string matchedExtName))
+                            {
+                                ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                                {
+                                    Type = ResidualType.Directory,
+                                    Category = ResidualCategory.BrowserExtension,
+                                    Path = extIdDir,
+                                    SizeInBytes = ResidualScanner.CalculatePathSize(extIdDir, isDirectory: true),
+                                    Confidence = ConfidenceLevel.Medium,
+                                    Reason = $"{browserLabel} ({profName}) 关联扩展插件: {matchedExtName}",
+                                    IsSelected = true
+                                });
+
+                                foreach (var storageFolder in new[] { "Local Extension Settings", "Sync Extension Settings", "Managed Extension Settings" })
+                                {
+                                    string extStorage = Path.Combine(profDir, storageFolder, extId);
+                                    if (Directory.Exists(extStorage))
+                                    {
+                                        ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                                        {
+                                            Type = ResidualType.Directory,
+                                            Category = ResidualCategory.BrowserExtension,
+                                            Path = extStorage,
+                                            SizeInBytes = ResidualScanner.CalculatePathSize(extStorage, isDirectory: true),
+                                            Confidence = ConfidenceLevel.Medium,
+                                            Reason = $"{browserLabel} ({profName}) 扩展配置存储 ({matchedExtName})",
+                                            IsSelected = true
+                                        });
+                                    }
+                                }
+
+                                string indexedDbExt = Path.Combine(profDir, "IndexedDB", $"chrome-extension_{extId}_0.indexeddb.leveldb");
+                                if (Directory.Exists(indexedDbExt))
+                                {
+                                    ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                                    {
+                                        Type = ResidualType.Directory,
+                                        Category = ResidualCategory.BrowserExtension,
+                                        Path = indexedDbExt,
+                                        SizeInBytes = ResidualScanner.CalculatePathSize(indexedDbExt, isDirectory: true),
+                                        Confidence = ConfidenceLevel.Medium,
+                                        Reason = $"{browserLabel} ({profName}) 扩展 IndexedDB 数据库 ({matchedExtName})",
+                                        IsSelected = true
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        // Scan Firefox Profiles under %APPDATA%\Mozilla\Firefox\Profiles
+        string roamingAppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (!string.IsNullOrEmpty(roamingAppData))
+        {
+            string ffProfilesRoot = Path.Combine(roamingAppData, @"Mozilla\Firefox\Profiles");
+            if (Directory.Exists(ffProfilesRoot))
+            {
+                try
+                {
+                    foreach (var ffProf in Directory.GetDirectories(ffProfilesRoot))
+                    {
+                        string extFolder = Path.Combine(ffProf, "extensions");
+                        if (!Directory.Exists(extFolder)) continue;
+
+                        foreach (var xpiFile in Directory.GetFiles(extFolder, "*.xpi"))
+                        {
+                            string xpiName = Path.GetFileNameWithoutExtension(xpiFile);
+                            if (xpiName.Contains(profile.DisplayName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                                {
+                                    Type = ResidualType.File,
+                                    Category = ResidualCategory.BrowserExtension,
+                                    Path = xpiFile,
+                                    SizeInBytes = ResidualScanner.CalculatePathSize(xpiFile, isDirectory: false),
+                                    Confidence = ConfidenceLevel.Medium,
+                                    Reason = $"Firefox 关联扩展插件包 ({Path.GetFileName(ffProf)})",
+                                    IsSelected = true
+                                });
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+    }
+
+    private static bool TryMatchChromiumExtensionManifest(
+        string extIdDir,
+        TargetProfile profile,
+        out string matchedExtName)
+    {
+        matchedExtName = string.Empty;
+        try
+        {
+            foreach (var verDir in Directory.GetDirectories(extIdDir))
+            {
+                string manifestPath = Path.Combine(verDir, "manifest.json");
+                if (!File.Exists(manifestPath)) continue;
+
+                using var doc = JsonDocument.Parse(File.ReadAllText(manifestPath));
+                var root = doc.RootElement;
+                string? name = root.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(name) && name.StartsWith("__MSG_", StringComparison.OrdinalIgnoreCase))
+                {
+                    name = TryResolveChromiumLocaleMessage(verDir, name);
+                }
+
+                if (!string.IsNullOrWhiteSpace(name) &&
+                    (name.Equals(profile.DisplayName, StringComparison.OrdinalIgnoreCase) ||
+                     (profile.DisplayName.Length >= 5 && name.Contains(profile.DisplayName, StringComparison.OrdinalIgnoreCase))))
+                {
+                    matchedExtName = name.Trim();
+                    return true;
+                }
+            }
+        }
+        catch { }
+
+        return false;
+    }
+
+    private static string? TryResolveChromiumLocaleMessage(string versionDir, string rawMsgPlaceholder)
+    {
+        string msgKey = rawMsgPlaceholder.Trim('_').Substring(4).Trim('_');
+        if (string.IsNullOrWhiteSpace(msgKey)) return null;
+
+        foreach (var locale in new[] { "zh_CN", "en", "en_US" })
+        {
+            string msgFile = Path.Combine(versionDir, "_locales", locale, "messages.json");
+            if (!File.Exists(msgFile)) continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(msgFile));
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.Name.Equals(msgKey, StringComparison.OrdinalIgnoreCase) &&
+                        prop.Value.TryGetProperty("message", out var msgVal))
+                    {
+                        return msgVal.GetString();
+                    }
+                }
+            }
+            catch { }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Scans HKCU\Software\Classes and HKLM\SOFTWARE\Classes for custom URL Protocol handlers (e.g. zoommtg://, vscode://, weixin://)
+    /// whose shell\open\command points to the uninstalled application.
+    /// </summary>
+    private static void ScanCustomUrlProtocols(TargetProfile profile, List<ResidualItem> results)
+    {
+        var classRoots = new (RegistryHive Hive, RegistryView View, string SubPath, string Prefix, bool Is64View)[]
+        {
+            (RegistryHive.CurrentUser, RegistryView.Default, @"Software\Classes", @"HKCU\Software\Classes", Environment.Is64BitOperatingSystem),
+            (RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Classes", @"HKLM\SOFTWARE\Classes", true)
+        };
+
+        foreach (var (hive, view, subPath, prefix, is64View) in classRoots)
+        {
+            try
+            {
+                using var baseKey = RegistryKey.OpenBaseKey(hive, view);
+                using var classesKey = baseKey.OpenSubKey(subPath);
+                if (classesKey == null) continue;
+
+                foreach (var keyName in classesKey.GetSubKeyNames())
+                {
+                    if (string.IsNullOrWhiteSpace(keyName) || keyName[0] == '.' || keyName.Contains('\\'))
+                        continue;
+                    if (StandardSystemProtocols.Contains(keyName) ||
+                        keyName.StartsWith("CLSID", StringComparison.OrdinalIgnoreCase) ||
+                        keyName.StartsWith("Interface", StringComparison.OrdinalIgnoreCase) ||
+                        keyName.StartsWith("TypeLib", StringComparison.OrdinalIgnoreCase) ||
+                        keyName.StartsWith("AppID", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        using var protoKey = classesKey.OpenSubKey(keyName);
+                        if (protoKey == null || protoKey.GetValue("URL Protocol") == null)
+                            continue;
+
+                        using var cmdKey = protoKey.OpenSubKey(@"shell\open\command");
+                        string? cmdVal = cmdKey?.GetValue(string.Empty) as string;
+                        if (IsPathMatching(cmdVal, profile))
+                        {
+                            ResidualScanner.AddResidualIfUnique(results, new ResidualItem
+                            {
+                                Type = ResidualType.RegistryKey,
+                                Category = ResidualCategory.UrlProtocol,
+                                Path = $@"{prefix}\{keyName}",
+                                ValuePreview = cmdVal,
+                                Is64BitRegistryView = is64View,
+                                Confidence = ConfidenceLevel.High,
+                                Reason = $"反向引用：自定义 URL 协议处理器 ({keyName}://)",
+                                IsSelected = true
+                            });
+                        }
+                    }
+                    catch { }
                 }
             }
             catch { }
@@ -473,6 +745,7 @@ public class ReverseReferenceScanner
                         Path = @"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache",
                         ValueName = valName,
                         ValuePreview = RegistryBackup.TryGetRegistryValuePreview(muiKey, valName),
+                        Is64BitRegistryView = Environment.Is64BitOperatingSystem,
                         Confidence = ConfidenceLevel.High,
                         Reason = "反向引用：Explorer 界面显示缓存 (MuiCache)",
                         IsSelected = true
@@ -504,14 +777,25 @@ public class ReverseReferenceScanner
 
                 try
                 {
-                    string content = File.ReadAllText(taskFile);
-                    if (IsPathMatching(content, profile))
+                    var doc = XDocument.Load(taskFile);
+                    XNamespace ns = doc.Root?.Name.Namespace ?? XNamespace.None;
+
+                    string? command = doc.Descendants(ns + "Command").FirstOrDefault()?.Value?.Trim();
+                    string? args = doc.Descendants(ns + "Arguments").FirstOrDefault()?.Value?.Trim();
+                    string? workDir = doc.Descendants(ns + "WorkingDirectory").FirstOrDefault()?.Value?.Trim();
+
+                    bool matched = IsPathMatching(command, profile) ||
+                                   IsPathMatching(args, profile) ||
+                                   IsPathMatching(workDir, profile);
+
+                    if (matched)
                     {
                         ResidualScanner.AddResidualIfUnique(results, new ResidualItem
                         {
                             Type = ResidualType.File,
                             Category = ResidualCategory.ScheduledTask,
                             Path = taskFile,
+                            ValuePreview = command,
                             TaskSchedulerName = "\\" + relPath,
                             SizeInBytes = ResidualScanner.CalculatePathSize(taskFile, false),
                             Confidence = ConfidenceLevel.High,
@@ -631,7 +915,6 @@ public class ReverseReferenceScanner
         if (string.IsNullOrWhiteSpace(text)) return false;
         string lower = Environment.ExpandEnvironmentVariables(text).ToLowerInvariant().Trim('"', ' ');
 
-        // 1. Primary path prefix check when the target app has a known installation directory
         if (profile.HasValidLocation)
         {
             string locWithSlash = profile.NormalizedLocation.TrimEnd('\\') + "\\";
@@ -645,8 +928,6 @@ public class ReverseReferenceScanner
                     return true;
             }
 
-            // Critical safety guard: When the app HAS a known InstallLocation, do NOT match full paths
-            // pointing to a completely different existing directory on disk just because the .exe filename is similar!
             return false;
         }
 
@@ -656,8 +937,6 @@ public class ReverseReferenceScanner
             return true;
         }
 
-        // 2. Fallback for apps without a recorded InstallLocation: match distinctive MainExeNames
-        // only if the referenced executable path does NOT still exist inside another intact application folder.
         foreach (var exe in profile.MainExeNames)
         {
             string exeLower = exe.ToLowerInvariant();

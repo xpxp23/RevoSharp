@@ -7,12 +7,13 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RevoSharp.Core.Enums;
 using RevoSharp.Core.Models;
+using RevoSharp.Core.Serialization;
 using RevoSharp.Engine.Safety;
 using RevoSharp.Engine.Scanning;
 
 namespace RevoSharp.App.ViewModels;
 
-public partial class ResidualReviewViewModel : ObservableObject
+public partial class ResidualReviewViewModel : ObservableObject, IDisposable
 {
     private readonly ResidualScanner _scanner = new();
     private readonly IReadOnlyList<InstalledApp>? _otherInstalledApps;
@@ -69,10 +70,14 @@ public partial class ResidualReviewViewModel : ObservableObject
     [ObservableProperty]
     private bool _scheduleLockedOnReboot = true;
 
+    public int LastCleanedCount { get; private set; }
+    public int LastRebootScheduledCount { get; private set; }
+    public string LastFreedSpaceDisplay { get; private set; } = string.Empty;
+
     public int TotalCount => _allResiduals.Count;
     public int RegCount => _allResiduals.Count(r =>
         (r.Type == ResidualType.RegistryKey || r.Type == ResidualType.RegistryValue) &&
-        r.Category is not (ResidualCategory.Service or ResidualCategory.DriverPackage or ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension));
+        r.Category is not (ResidualCategory.Service or ResidualCategory.DriverPackage or ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension or ResidualCategory.UrlProtocol));
     public int FileCount => _allResiduals.Count(r =>
         (r.Type == ResidualType.Directory || r.Type == ResidualType.File) &&
         r.Category != ResidualCategory.Shortcut &&
@@ -81,7 +86,7 @@ public partial class ResidualReviewViewModel : ObservableObject
     public int ServiceAndTaskCount => _allResiduals.Count(r =>
         r.Category is ResidualCategory.Service or ResidualCategory.DriverPackage or ResidualCategory.ScheduledTask);
     public int ExtensionAndEnvCount => _allResiduals.Count(r =>
-        r.Category is ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension or ResidualCategory.ShellExtension or ResidualCategory.MsiMetadata);
+        r.Category is ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension or ResidualCategory.UrlProtocol or ResidualCategory.ShellExtension or ResidualCategory.MsiMetadata);
     public int LockedItemCount => _allResiduals.Count(r => r.IsLocked);
     public bool HasLockedItems => LockedItemCount > 0;
 
@@ -92,9 +97,34 @@ public partial class ResidualReviewViewModel : ObservableObject
     {
         TargetApp = app;
         _otherInstalledApps = otherInstalledApps;
+
+        var cfg = SettingsSerializer.Current;
+        _currentScanMode = cfg.DefaultScanMode;
+        _createRestorePoint = cfg.CreateRestorePointByDefault;
+        _scheduleLockedOnReboot = cfg.ScheduleLockedOnReboot;
+
+        TreeSelectionSyncScope.BatchUpdateCompleted += OnTreeBatchUpdateCompleted;
+
         if (initialResiduals != null && initialResiduals.Count > 0)
         {
             AttachResiduals(initialResiduals);
+        }
+    }
+
+    public void Dispose()
+    {
+        TreeSelectionSyncScope.BatchUpdateCompleted -= OnTreeBatchUpdateCompleted;
+        foreach (var old in _allResiduals)
+        {
+            old.PropertyChanged -= OnResidualItemPropertyChanged;
+        }
+    }
+
+    private void OnTreeBatchUpdateCompleted()
+    {
+        if (!_suppressTreeSync)
+        {
+            UpdateSelectionStatus();
         }
     }
 
@@ -176,24 +206,29 @@ public partial class ResidualReviewViewModel : ObservableObject
     {
         if (e.PropertyName == nameof(ResidualItem.IsSelected) && sender is ResidualItem changedItem)
         {
-            if (!_suppressTreeSync)
+            // When TreeView is performing a batch cascade across hundreds of child nodes, skip per-item sync & status calculation!
+            if (_suppressTreeSync || TreeSelectionSyncScope.IsBatchUpdating)
             {
-                // Critical safety fix: When a user unchecks a child item in Flat mode, automatically uncheck any
-                // ancestor Directory or RegistryKey item so whole-folder or whole-key deletion cannot wipe out the unchecked child!
-                if (!changedItem.IsSelected)
-                {
-                    DeselectAncestorItemsContaining(changedItem);
-                }
-
-                if (IsTreeViewMode)
-                {
-                    SyncTreesFromItems();
-                }
-                else
-                {
-                    _isTreeDirty = true;
-                }
+                return;
             }
+
+            if (!changedItem.IsSelected)
+            {
+                // User explicitly unchecked this item in Flat mode: it is NOT demoted by a child uncheck,
+                // while any ancestor Directory or RegistryKey containing it IS demoted so whole-folder deletion is prevented!
+                changedItem.IsDemotedByChildUncheck = false;
+                DeselectAncestorItemsContaining(changedItem);
+            }
+
+            if (IsTreeViewMode)
+            {
+                SyncTreesFromItems();
+            }
+            else
+            {
+                _isTreeDirty = true;
+            }
+
             UpdateSelectionStatus();
         }
     }
@@ -219,6 +254,7 @@ public partial class ResidualReviewViewModel : ObservableObject
                     if (isAncestorPath || isKeyContainingValue)
                     {
                         candidateParent.IsSelected = false;
+                        candidateParent.IsDemotedByChildUncheck = true;
                     }
                 }
             }
@@ -311,7 +347,7 @@ public partial class ResidualReviewViewModel : ObservableObject
         {
             query = query.Where(r =>
                 (r.Type == ResidualType.RegistryKey || r.Type == ResidualType.RegistryValue) &&
-                r.Category is not (ResidualCategory.Service or ResidualCategory.DriverPackage or ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension));
+                r.Category is not (ResidualCategory.Service or ResidualCategory.DriverPackage or ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension or ResidualCategory.UrlProtocol));
         }
         else if (SelectedCategory == "文件与目录")
         {
@@ -330,7 +366,7 @@ public partial class ResidualReviewViewModel : ObservableObject
         }
         else if (SelectedCategory == "扩展与环境")
         {
-            query = query.Where(r => r.Category is ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension or ResidualCategory.ShellExtension or ResidualCategory.MsiMetadata);
+            query = query.Where(r => r.Category is ResidualCategory.EnvironmentPath or ResidualCategory.BrowserExtension or ResidualCategory.UrlProtocol or ResidualCategory.ShellExtension or ResidualCategory.MsiMetadata);
         }
         else if (SelectedCategory == "占用锁定")
         {
@@ -366,7 +402,11 @@ public partial class ResidualReviewViewModel : ObservableObject
         _suppressTreeSync = true;
         try
         {
-            foreach (var item in DisplayedResiduals) item.IsSelected = true;
+            foreach (var item in DisplayedResiduals)
+            {
+                item.IsDemotedByChildUncheck = false;
+                item.IsSelected = true;
+            }
         }
         finally
         {
@@ -383,7 +423,11 @@ public partial class ResidualReviewViewModel : ObservableObject
         _suppressTreeSync = true;
         try
         {
-            foreach (var item in DisplayedResiduals) item.IsSelected = false;
+            foreach (var item in DisplayedResiduals)
+            {
+                item.IsDemotedByChildUncheck = false;
+                item.IsSelected = false;
+            }
         }
         finally
         {
@@ -402,6 +446,7 @@ public partial class ResidualReviewViewModel : ObservableObject
         {
             foreach (var item in DisplayedResiduals)
             {
+                item.IsDemotedByChildUncheck = false;
                 item.IsSelected = item.Confidence == ConfidenceLevel.High;
             }
         }
@@ -683,6 +728,9 @@ public partial class ResidualReviewViewModel : ObservableObject
             return;
         }
 
+        long estimatedBytesToFree = itemsToClean.Sum(r => Math.Max(0, r.SizeInBytes));
+        LastFreedSpaceDisplay = estimatedBytesToFree > 0 ? FormatBytes(estimatedBytesToFree) : string.Empty;
+
         IsBusy = true;
         IsCleaningProgressVisible = true;
         CleanProgressPercent = 2;
@@ -766,10 +814,11 @@ public partial class ResidualReviewViewModel : ObservableObject
                             continue;
                         }
 
+                        string? svcName = !string.IsNullOrEmpty(item.ServiceName) ? item.ServiceName : item.ValueName;
                         if ((item.Category is ResidualCategory.Service or ResidualCategory.DriverPackage) &&
-                            !string.IsNullOrEmpty(item.ValueName))
+                            !string.IsNullOrEmpty(svcName))
                         {
-                            await RegistryBackup.StopAndDeleteServiceAsync(item.ValueName);
+                            await RegistryBackup.StopAndDeleteServiceAsync(svcName);
                             if (!string.IsNullOrEmpty(item.DriverPublishedInfName))
                             {
                                 await RegistryBackup.UninstallDriverPackageAsync(item.DriverPublishedInfName);
@@ -834,10 +883,10 @@ public partial class ResidualReviewViewModel : ObservableObject
                 cleanedCount++;
             }
 
-            // Step 4: Prepare file & directory items, surgically expanding any directory that has both selected and unselected children
+            // Step 4: Prepare file & directory items, surgically expanding ONLY directories that were demoted by a child uncheck
             var fileAndDirItems = new List<ResidualItem>();
             var keptFilePaths = unselectedItems
-                .Where(u => u.Type is ResidualType.File or ResidualType.Directory)
+                .Where(u => u.Type is ResidualType.File or ResidualType.Directory && !u.IsDemotedByChildUncheck)
                 .Select(u => u.Path.TrimEnd('\\'))
                 .ToList();
 
@@ -853,16 +902,11 @@ public partial class ResidualReviewViewModel : ObservableObject
                 }
             }
 
-            // Also check if an unselected parent directory in _allResiduals was auto-deselected ONLY because a child was unchecked,
-            // while still having other checked children under it!
-            foreach (var unselectedDir in unselectedItems.Where(u => u.Type == ResidualType.Directory))
+            // Expand ONLY parent directories that were automatically demoted by a child uncheck (IsDemotedByChildUncheck == true),
+            // NEVER expanding a directory that the user explicitly unchecked!
+            foreach (var demotedDir in unselectedItems.Where(u => u.Type == ResidualType.Directory && u.IsDemotedByChildUncheck))
             {
-                string prefix = unselectedDir.Path.TrimEnd('\\') + "\\";
-                bool hasCheckedChild = itemsToClean.Any(c => c.Path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
-                if (hasCheckedChild)
-                {
-                    ExpandPartialDirectorySiblingTargets(unselectedDir.Path, keptFilePaths, fileAndDirItems);
-                }
+                ExpandPartialDirectorySiblingTargets(demotedDir.Path, keptFilePaths, fileAndDirItems);
             }
 
             fileAndDirItems = fileAndDirItems
@@ -916,6 +960,9 @@ public partial class ResidualReviewViewModel : ObservableObject
             }
             ReportProgress(100, "清理完成！", string.Empty);
         });
+
+        LastCleanedCount = cleanedCount;
+        LastRebootScheduledCount = rebootScheduledCount;
 
         IsCleaningProgressVisible = false;
         IsBusy = false;

@@ -7,8 +7,8 @@
         xmlns:vm="clr-namespace:RevoSharp.App.ViewModels"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
         mc:Ignorable="d"
-        Title="RevoSharp v2.3 Pro - 深度软件卸载与安装监控"
-        Height="780" Width="1260"
+        Title="RevoSharp v2.4 Pro - 深度软件卸载与安装监控"
+        Height="800" Width="1280"
         MinHeight="560" MinWidth="960"
         WindowStartupLocation="CenterScreen"
         ExtendsContentIntoTitleBar="True"
@@ -86,12 +86,12 @@
 
         <!-- 1. Window TitleBar -->
         <ui:TitleBar Grid.Row="0"
-                     Title="RevoSharp v2.3 Pro"
+                     Title="RevoSharp v2.4 Pro"
                      ShowMaximize="True"
                      ShowMinimize="True"
                      Icon="{ui:SymbolIcon Shield24}">
             <ui:TitleBar.Header>
-                <TextBlock Text="深度逆向卸载 · Restart Manager 解锁 · 猎犬模式 · ETW 安装监控"
+                <TextBlock Text="NTFS MFT 全盘检索 · 数字签名护栏 · 卸载问卷拦截 · 猎犬模式 · ETW 安装监控"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                            VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
             </ui:TitleBar.Header>
@@ -106,11 +106,10 @@
                 Margin="16,0,16,10"
                 CornerRadius="8">
             <StackPanel>
-                <!-- Responsive DockPanel ensures WrapPanel wraps gracefully instead of clipping on 960px~1150px screens -->
                 <DockPanel LastChildFill="True">
                     <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
                         <!-- Search Box -->
-                        <ui:TextBox Width="255"
+                        <ui:TextBox Width="250"
                                     PlaceholderText="搜索软件名称、发行商、版本或路径..."
                                     Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                                     Icon="{ui:SymbolIcon Search24}"
@@ -123,9 +122,17 @@
                                   Margin="10,0,0,0"
                                   FontSize="12"
                                   ToolTip="同时扫描并展示 Windows 商店应用 (UWP / MSIX)" />
+
+                        <!-- Block Uninstaller Survey Popups Toggle -->
+                        <CheckBox Content="拦截卸载问卷"
+                                  IsChecked="{Binding BlockUninstallSurveyWebpages}"
+                                  VerticalAlignment="Center"
+                                  Margin="10,0,0,0"
+                                  FontSize="12"
+                                  ToolTip="卸载期间自动检测并阻断原厂卸载程序退场时拉起的浏览器调查问卷网页弹窗" />
                     </StackPanel>
 
-                    <!-- Structured Action Bar: Wraps cleanly on narrow windows -->
+                    <!-- Structured Action Bar -->
                     <WrapPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                         <ui:Button Content="卸载并清残留"
                                    Icon="{ui:SymbolIcon Delete24}"
@@ -165,17 +172,17 @@
                                    Click="OnHunterModeClick"
                                    ToolTip="进入桌面准星猎杀模式，支持瞄准任意活动窗口或拖入快捷方式" />
 
-                        <ui:Button Content="工具与备份"
+                        <ui:Button Content="工具与设置"
                                    Icon="{ui:SymbolIcon Apps24}"
                                    Margin="0,2,6,2"
                                    Click="OnToolkitClick"
-                                   ToolTip="开机自启动管理器、多级备份还原中心与已追踪安装日志库" />
+                                   ToolTip="开机自启动管理器、多级备份还原中心、安装日志库、右键菜单集成与安全白名单设置" />
 
                         <ui:Button Content="{Binding CurrentThemeButtonText}"
                                    Icon="{ui:SymbolIcon Color24}"
                                    Margin="0,2,6,2"
                                    Command="{Binding CycleThemeCommand}"
-                                   ToolTip="一键切换界面主题：深色 (Dark) / 浅色 (Light) / 跟随系统 (System)" />
+                                   ToolTip="一键切换界面主题并自动记忆：深色 (Dark) / 浅色 (Light) / 跟随系统 (System)" />
 
                         <ui:Button Icon="{ui:SymbolIcon ArrowClockwise24}"
                                    Margin="0,2,0,2"
@@ -272,6 +279,7 @@
                             <MenuItem Header="打开安装所在目录" Command="{Binding OpenLocationCommand}" />
                             <MenuItem Header="在注册表编辑器 (RegEdit) 中定位" Command="{Binding OpenRegistryKeyCommand}" />
                             <MenuItem Header="复制安装目录路径" Command="{Binding CopyInstallLocationCommand}" />
+                            <MenuItem Header="复制注册表项路径" Command="{Binding CopyRegistryKeyPathCommand}" />
                             <MenuItem Header="复制原厂卸载命令行" Command="{Binding CopyUninstallStringCommand}" />
                             <Separator />
                             <MenuItem Header="在浏览器中搜索该软件信息" Command="{Binding SearchOnlineInfoCommand}" />
@@ -283,7 +291,7 @@
                         <DataGridTemplateColumn Header="软件名称" Width="*" MinWidth="290" SortMemberPath="DisplayName">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="6,3">
+                                    <Grid Margin="6,4">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="28" />
                                             <ColumnDefinition Width="*" />
@@ -337,7 +345,7 @@
                                             Binding="{Binding FormattedSize}"
                                             SortMemberPath="EstimatedSizeInBytes"
                                             ElementStyle="{StaticResource RightAlignedCellTextStyle}"
-                                            Width="100" />
+                                            Width="105" />
 
                         <DataGridTextColumn Header="安装日期"
                                             Binding="{Binding InstallDateDisplay}"
@@ -350,13 +358,12 @@
                                             ElementStyle="{StaticResource CenterAlignedCellTextStyle}"
                                             Width="75" />
 
-                        <DataGridTemplateColumn Header="监控日志" Width="105" SortMemberPath="HasTraceLog">
+                        <DataGridTemplateColumn Header="监控日志" Width="95" SortMemberPath="HasTraceLog">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
-                                        <ui:Badge Content="已关联" Appearance="Success" Visibility="{Binding HasTraceLog, Converter={StaticResource BoolToVis}}" />
-                                        <TextBlock Text="--" Foreground="{DynamicResource TextFillColorTertiaryBrush}" Visibility="{Binding HasTraceLog, Converter={StaticResource InvBoolToVis}}" FontSize="11" />
-                                    </StackPanel>
+                                    <Grid VerticalAlignment="Center" HorizontalAlignment="Center">
+                                        <ui:Badge Content="已追踪" Appearance="Success" Visibility="{Binding HasTraceLog, Converter={StaticResource BoolToVis}}" />
+                                    </Grid>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -420,7 +427,7 @@
             </Grid>
         </Border>
 
-        <!-- 4. Collapsible Bottom App Details Inspector Bar -->
+        <!-- 4. Collapsible Bottom App Details Inspector Bar (Responsive Star-Width Grid, No Premature 420px Truncation) -->
         <Border Grid.Row="3"
                 Margin="16,0,16,10"
                 Padding="14,10"
@@ -446,50 +453,62 @@
                     </Grid.ColumnDefinitions>
 
                     <!-- Install Location -->
-                    <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Margin="0,0,16,4">
-                        <ui:SymbolIcon Symbol="Folder24" FontSize="14" Foreground="{DynamicResource RevoAccentCyanBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <TextBlock Text="安装目录：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding SelectedApp.InstallLocationDisplay}"
+                    <Grid Grid.Row="0" Grid.Column="0" Margin="0,0,18,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ui:SymbolIcon Grid.Column="0" Symbol="Folder24" FontSize="14" Foreground="{DynamicResource RevoAccentCyanBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <TextBlock Grid.Column="1" Text="安装目录：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="{Binding SelectedApp.InstallLocationDisplay}"
                                    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                    FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
                                    FontSize="12"
                                    VerticalAlignment="Center"
-                                   MaxWidth="420"
                                    TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding SelectedApp.InstallLocationDisplay}" />
-                    </StackPanel>
+                    </Grid>
 
                     <!-- Registry Path -->
-                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,4">
-                        <ui:SymbolIcon Symbol="Code24" FontSize="14" Foreground="{DynamicResource RevoAccentPurpleBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <TextBlock Text="注册表项：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding SelectedApp.RegistryKeyPath}"
+                    <Grid Grid.Row="0" Grid.Column="1" Margin="0,0,0,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ui:SymbolIcon Grid.Column="0" Symbol="Code24" FontSize="14" Foreground="{DynamicResource RevoAccentPurpleBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <TextBlock Grid.Column="1" Text="注册表项：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="{Binding SelectedApp.RegistryKeyPath}"
                                    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                    FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
                                    FontSize="12"
                                    VerticalAlignment="Center"
-                                   MaxWidth="420"
                                    TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding SelectedApp.RegistryKeyPath}" />
-                    </StackPanel>
+                    </Grid>
 
                     <!-- Uninstall Command -->
-                    <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal">
-                        <ui:SymbolIcon Symbol="Wrench24" FontSize="14" Foreground="{DynamicResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <TextBlock Text="卸载命令：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding SelectedApp.UninstallString}"
+                    <Grid Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ui:SymbolIcon Grid.Column="0" Symbol="Wrench24" FontSize="14" Foreground="{DynamicResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <TextBlock Grid.Column="1" Text="卸载命令：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Text="{Binding SelectedApp.UninstallString}"
                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                    FontFamily="Consolas, Cascadia Code, Microsoft YaHei UI"
                                    FontSize="11.5"
                                    VerticalAlignment="Center"
-                                   MaxWidth="820"
                                    TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding SelectedApp.UninstallString}" />
-                    </StackPanel>
+                    </Grid>
                 </Grid>
 
                 <!-- Quick Inspector Actions -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
                     <ui:Button Content="打开目录"
                                Icon="{ui:SymbolIcon FolderOpen24}"
                                FontSize="12"
@@ -517,7 +536,7 @@
             <Grid>
                 <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" />
                 <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="12"
-                           Text="RevoSharp v2.3 Pro | .NET 8 (x64) | ETW Kernel, Restart Manager &amp; Native MSI/LNK Engine" />
+                           Text="RevoSharp v2.4 Pro | .NET 8 (x64) | NTFS MFT, Authenticode Guard, Restart Manager &amp; ETW Engine" />
             </Grid>
         </Border>
     </Grid>

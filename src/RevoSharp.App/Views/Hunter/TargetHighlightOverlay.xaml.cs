@@ -16,6 +16,18 @@ public partial class TargetHighlightOverlay : Window
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
 
+    private static readonly SolidColorBrush WarningBorderBrush = CreateFrozenBrush(Color.FromRgb(0xFF, 0x44, 0x44));
+    private static readonly SolidColorBrush WarningFillBrush = CreateFrozenBrush(Color.FromArgb(0x20, 0xFF, 0x44, 0x44));
+    private static readonly SolidColorBrush NormalBorderBrush = CreateFrozenBrush(Color.FromRgb(0x00, 0x80, 0xFF));
+    private static readonly SolidColorBrush NormalFillBrush = CreateFrozenBrush(Color.FromArgb(0x18, 0x00, 0x80, 0xFF));
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var b = new SolidColorBrush(color);
+        b.Freeze();
+        return b;
+    }
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -46,13 +58,13 @@ public partial class TargetHighlightOverlay : Window
 
         if (isWarning)
         {
-            HighlightBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x44, 0x44));
-            HighlightBorder.Background = new SolidColorBrush(Color.FromArgb(0x20, 0xFF, 0x44, 0x44));
+            HighlightBorder.BorderBrush = WarningBorderBrush;
+            HighlightBorder.Background = WarningFillBrush;
         }
         else
         {
-            HighlightBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(0x00, 0x80, 0xFF));
-            HighlightBorder.Background = new SolidColorBrush(Color.FromArgb(0x18, 0x00, 0x80, 0xFF));
+            HighlightBorder.BorderBrush = NormalBorderBrush;
+            HighlightBorder.Background = NormalFillBrush;
         }
 
         if (!IsVisible)
@@ -63,7 +75,6 @@ public partial class TargetHighlightOverlay : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd != IntPtr.Zero)
         {
-            // Position directly in Win32 physical screen coordinates so mixed-DPI multi-monitor setups align 100% accurately
             SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,

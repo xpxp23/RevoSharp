@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:conv="clr-namespace:RevoSharp.App.Converters"
-        Title="系统工具箱与备份管理中心 (v2.3 Pro)"
-        Height="700" Width="1100"
-        MinHeight="540" MinWidth="880"
+        Title="系统工具箱、备份还原与引擎设置中心 (v2.4 Pro)"
+        Height="720" Width="1140"
+        MinHeight="560" MinWidth="900"
         WindowStartupLocation="CenterOwner"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica">
@@ -23,12 +23,12 @@
         </Grid.RowDefinitions>
 
         <ui:TitleBar Grid.Row="0"
-                     Title="系统工具箱与多级备份还原中心 (v2.3 Pro)"
+                     Title="系统工具箱、备份还原与引擎设置中心 (v2.4 Pro)"
                      ShowMaximize="True"
                      ShowMinimize="False"
                      Icon="{ui:SymbolIcon Shield24}">
             <ui:TitleBar.Header>
-                <TextBlock Text="开机自启管控 · 注册表/任务/环境变量/文件一键还原 · 安装监控日志库"
+                <TextBlock Text="开机自启死链清理 · 多级备份还原 · 监控日志库 · 右键菜单集成 · 安全白名单与引擎设置"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                            VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" />
             </ui:TitleBar.Header>
@@ -58,7 +58,7 @@
 
                             <Grid Grid.Row="0" Margin="0,0,0,10">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="260" />
+                                    <ColumnDefinition Width="250" />
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
@@ -73,6 +73,8 @@
                                 <StackPanel Grid.Column="2" Orientation="Horizontal">
                                     <ui:Button Content="启用 / 禁用切换" Icon="{ui:SymbolIcon Power24}" Appearance="Primary" Margin="0,0,8,0" Click="OnToggleAutostartClick"
                                                ToolTip="与 Windows 任务管理器同步无损切换启用/禁用状态，不删除原始条目" />
+                                    <ui:Button Content="一键清理无效死链" Icon="{ui:SymbolIcon Broom24}" Appearance="Caution" Margin="0,0,8,0" Click="OnCleanDeadAutostartsClick"
+                                               ToolTip="自动备份并批量清除所有目标可执行文件已不存在的无效自启动死链" />
                                     <ui:Button Content="打开所在位置" Icon="{ui:SymbolIcon FolderOpen24}" Margin="0,0,8,0" Click="OnOpenAutostartLocationClick" />
                                     <ui:Button Content="备份并移除选中项" Icon="{ui:SymbolIcon Delete24}" Appearance="Danger" Margin="0,0,8,0" Click="OnRemoveAutostartClick" />
                                     <ui:Button Content="刷新" Icon="{ui:SymbolIcon ArrowClockwise24}" Click="OnRefreshAutostartClick" />
@@ -91,7 +93,7 @@
                                         </ContextMenu>
                                     </ui:DataGrid.ContextMenu>
                                     <DataGrid.Columns>
-                                        <DataGridTemplateColumn Header="状态" Width="85" SortMemberPath="IsEnabled">
+                                        <DataGridTemplateColumn Header="状态" Width="80" SortMemberPath="IsEnabled">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>
                                                     <Grid VerticalAlignment="Center">
@@ -101,9 +103,19 @@
                                                 </DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
-                                        <DataGridTextColumn Header="启动项名称" Binding="{Binding Name}" Width="185" />
-                                        <DataGridTextColumn Header="驻留位置类型" Binding="{Binding LocationType}" Width="140" />
-                                        <DataGridTextColumn Header="发行商" Binding="{Binding Publisher}" Width="145" />
+                                        <DataGridTemplateColumn Header="文件校验" Width="86" SortMemberPath="FileExists">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Grid VerticalAlignment="Center">
+                                                        <ui:Badge Content="有效" Appearance="Secondary" Visibility="{Binding FileExists, Converter={StaticResource BoolToVis}}" />
+                                                        <ui:Badge Content="无效死链" Appearance="Danger" Visibility="{Binding IsDeadLink, Converter={StaticResource BoolToVis}}" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTextColumn Header="启动项名称" Binding="{Binding Name}" Width="180" />
+                                        <DataGridTextColumn Header="驻留位置类型" Binding="{Binding LocationType}" Width="135" />
+                                        <DataGridTextColumn Header="发行商" Binding="{Binding PublisherDisplay}" Width="150" />
                                         <DataGridTextColumn Header="启动命令行 / 目标路径" Binding="{Binding Command}" Width="*" />
                                     </DataGrid.Columns>
                                 </ui:DataGrid>
@@ -281,6 +293,146 @@
                                     <TextBlock Text="在主界面点击「监视安装」启动新软件安装包，即可通过 ETW 内核追踪记录全量文件与注册表变更" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" HorizontalAlignment="Center" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Grid>
+                        </Grid>
+                    </Border>
+                </TabItem>
+
+                <!-- Tab 4: Engine Settings, Context Menu Integration & Safety Whitelist -->
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" Margin="4,2">
+                            <ui:SymbolIcon Symbol="Settings24" FontSize="14" Foreground="{DynamicResource RevoAccentAmberBrush}" Margin="0,0,6,0" VerticalAlignment="Center" />
+                            <TextBlock Text="引擎设置与右键集成" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </TabItem.Header>
+                    <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="18"
+                            Margin="0,8,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="18" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Left Column: Shell Context Menu & Core Engine Switches -->
+                            <StackPanel Grid.Column="0">
+                                <Border Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="8" Padding="14" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                            <ui:SymbolIcon Symbol="Apps24" FontSize="16" Foreground="{DynamicResource RevoAccentCyanBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <TextBlock Text="Windows 资源管理器右键菜单集成" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                                            <ui:Badge x:Name="ContextMenuStatusBadge" Content="未注册" Appearance="Secondary" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock Text="为桌面快捷方式 (.lnk)、可执行程序 (.exe) 与应用文件夹注册「使用 RevoSharp 强力卸载」右键菜单项，支持一键直达深度残留扫描。"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10" />
+                                        <StackPanel Orientation="Horizontal">
+                                            <ui:Button Content="注册系统右键菜单" Icon="{ui:SymbolIcon Checkmark24}" Appearance="Primary" Margin="0,0,8,0" Click="OnRegisterContextMenuClick" />
+                                            <ui:Button Content="移除系统右键菜单" Icon="{ui:SymbolIcon Dismiss24}" Click="OnUnregisterContextMenuClick" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="8" Padding="14">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                            <ui:SymbolIcon Symbol="Shield24" FontSize="16" Foreground="{DynamicResource RevoAccentGreenBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <TextBlock Text="v2.4 Pro 深度扫描引擎与安全护栏策略 (自动持久化)" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="180" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="默认扫描深度级别：" VerticalAlignment="Center" Margin="0,0,10,0" FontSize="12.5" />
+                                            <ComboBox x:Name="DefaultScanModeCombo" Grid.Column="1" SelectionChanged="OnEngineSettingChanged">
+                                                <ComboBoxItem Content="安全 (Safe)" />
+                                                <ComboBoxItem Content="中等 (Moderate - 推荐)" />
+                                                <ComboBoxItem Content="高级 (Advanced + MFT)" />
+                                            </ComboBox>
+                                        </Grid>
+
+                                        <CheckBox x:Name="NtfsMftScanCheckBox"
+                                                  Content="启用 NTFS MFT / USN Journal 极速全盘残留检索 (Advanced 模式)"
+                                                  Margin="0,0,0,8"
+                                                  FontSize="12.5"
+                                                  Click="OnEngineCheckBoxClicked"
+                                                  ToolTip="通过底层卷设备句柄直接读取 NTFS USN 记录并重构 FRN 目录树，在 300ms 内检索全盘散落目录与 Prefetch 痕迹" />
+
+                                        <CheckBox x:Name="AuthenticodeGuardCheckBox"
+                                                  Content="启用 Authenticode 数字签名与大厂发行商防误删白名单护栏"
+                                                  Margin="0,0,0,8"
+                                                  FontSize="12.5"
+                                                  Click="OnEngineCheckBoxClicked"
+                                                  ToolTip="在高级模糊匹配与全盘检索时校验目录内二进制文件的 WinVerifyTrust 签名，防止误伤微软、NVIDIA 等第三方合法软件" />
+
+                                        <CheckBox x:Name="BlockSurveyWebpagesCheckBox"
+                                                  Content="卸载期间自动拦截原厂卸载器拉起的浏览器调查问卷弹窗"
+                                                  Margin="0,0,0,8"
+                                                  FontSize="12.5"
+                                                  Click="OnEngineCheckBoxClicked"
+                                                  ToolTip="实时监测卸载子进程命令行，自动阻断卸载结束时弹出的调查问卷网页" />
+
+                                        <CheckBox x:Name="DefaultRestorePointCheckBox"
+                                                  Content="清理残留前默认勾选创建 Windows 系统还原点"
+                                                  Margin="0,0,0,4"
+                                                  FontSize="12.5"
+                                                  Click="OnEngineCheckBoxClicked" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- Right Column: Custom Path Whitelist Manager -->
+                            <Border Grid.Column="2" Background="{DynamicResource LayerOnAcrylicFillColorDefaultBrush}" CornerRadius="8" Padding="14">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                            <ui:SymbolIcon Symbol="Folder24" FontSize="16" Foreground="{DynamicResource RevoAccentPurpleBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <TextBlock Text="自定义安全排除目录白名单 (Whitelisted Paths)" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock Text="在此列表中的目录及其子路径将被残留扫描引擎永久跳过，确保重要数据或共享开发环境绝不被清理："
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" TextWrapping="Wrap" />
+                                    </StackPanel>
+
+                                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <ui:TextBox x:Name="WhitelistInputBox"
+                                                    Grid.Column="0"
+                                                    PlaceholderText="输入或浏览要保护的文件夹路径..."
+                                                    Margin="0,0,6,0" />
+                                        <ui:Button Grid.Column="1" Content="浏览..." Icon="{ui:SymbolIcon FolderOpen24}" Margin="0,0,6,0" Click="OnBrowseWhitelistFolderClick" />
+                                        <ui:Button Grid.Column="2" Content="添加保护" Icon="{ui:SymbolIcon Add24}" Appearance="Primary" Click="OnAddWhitelistPathClick" />
+                                    </Grid>
+
+                                    <ListBox x:Name="WhitelistPathsListBox"
+                                             Grid.Row="2"
+                                             Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                             BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                             BorderThickness="1"
+                                             FontFamily="Consolas, Microsoft YaHei UI"
+                                             FontSize="12" />
+
+                                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                                        <ui:Button Content="移除选中白名单路径" Icon="{ui:SymbolIcon Delete24}" Appearance="Danger" Click="OnRemoveWhitelistPathClick" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
                         </Grid>
                     </Border>
                 </TabItem>

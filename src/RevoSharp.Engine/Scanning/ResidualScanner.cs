@@ -37,6 +37,8 @@ public class ResidualScanner
     private readonly ReverseReferenceScanner _refScanner = new();
     private readonly ShortcutScanner _shortcutScanner = new();
 
+    public static bool IsBlacklistedDirectoryName(string name) => BlacklistedNames.Contains(name);
+
     public async Task<List<ResidualItem>> ScanResidualsAsync(
         InstalledApp app,
         ScanMode mode = ScanMode.Moderate,
@@ -75,13 +77,19 @@ public class ResidualScanner
                 ScanSoftwareHives(profile, results, deepFuzzy: false);
             }
 
-            // 5. Level 3: Advanced Mode checks (Deep fuzzy token scan + Temp directory)
+            // 5. Level 3: Advanced Mode checks (Deep fuzzy token scan + Temp directory + NTFS MFT/USN volume search)
             if (mode >= ScanMode.Advanced)
             {
                 ScanCommonDirectories(profile, results, protectedSiblingDirs, deepFuzzy: true);
                 ScanSoftwareHives(profile, results, deepFuzzy: true);
                 ScanTempDirectory(profile, results);
+                NtfsMftScanner.ScanNtfsVolumes(profile, protectedSiblingDirs, results);
             }
+
+            // Filter out any user-configured whitelisted paths before returning
+            results.RemoveAll(r =>
+                r.Type is ResidualType.File or ResidualType.Directory &&
+                SettingsSerializer.IsPathWhitelisted(r.Path));
 
             foreach (var item in results)
             {
@@ -91,7 +99,7 @@ public class ResidualScanner
                 }
             }
 
-            // Automatically run a lightweight Restart Manager file-lock check on discovered residual files/folders
+            // Run 2-stage coarse-to-fine Restart Manager file-lock check on discovered residual files/folders
             await FileLockUnlocker.ScanAndAttachLocksToResidualsAsync(results);
 
             return results;
@@ -162,7 +170,8 @@ public class ResidualScanner
     {
         foreach (var file in traceLog.CreatedFiles)
         {
-            if (AppLocator.IsProtectedSharedDirectory(file)) continue;
+            if (AppLocator.IsProtectedSharedDirectory(file) || SettingsSerializer.IsPathWhitelisted(file))
+                continue;
 
             if (File.Exists(file))
             {
@@ -194,11 +203,14 @@ public class ResidualScanner
 
         foreach (var key in traceLog.CreatedRegistryKeys)
         {
+            string normKey = RegistryBackup.NormalizeHivePrefix(key);
+            bool isWow64 = normKey.Contains(@"\WOW6432Node\", StringComparison.OrdinalIgnoreCase);
             AddResidualIfUnique(results, new ResidualItem
             {
                 Type = ResidualType.RegistryKey,
                 Category = ResidualCategory.RegistryKey,
-                Path = RegistryBackup.NormalizeHivePrefix(key),
+                Path = normKey,
+                Is64BitRegistryView = !isWow64,
                 Confidence = ConfidenceLevel.High,
                 Reason = "ETW 安装监控精确捕获注册表项",
                 IsSelected = true
@@ -212,6 +224,7 @@ public class ResidualScanner
 
             string keyPath = RegistryBackup.NormalizeHivePrefix(rawValToken.Substring(0, sep));
             string valName = rawValToken.Substring(sep + 2);
+            bool isWow64 = keyPath.Contains(@"\WOW6432Node\", StringComparison.OrdinalIgnoreCase);
 
             AddResidualIfUnique(results, new ResidualItem
             {
@@ -219,6 +232,7 @@ public class ResidualScanner
                 Category = ResidualCategory.RegistryValue,
                 Path = keyPath,
                 ValueName = valName,
+                Is64BitRegistryView = !isWow64,
                 Confidence = ConfidenceLevel.High,
                 Reason = "ETW 安装监控精确捕获写入键值",
                 IsSelected = true
@@ -230,6 +244,7 @@ public class ResidualScanner
     {
         if (profile.HasValidLocation &&
             !AppLocator.IsProtectedSharedDirectory(profile.InstallLocation) &&
+            !SettingsSerializer.IsPathWhitelisted(profile.InstallLocation) &&
             Directory.Exists(profile.InstallLocation))
         {
             AddResidualIfUnique(results, new ResidualItem
@@ -243,7 +258,9 @@ public class ResidualScanner
                 IsSelected = true
             });
         }
-        else if (!string.IsNullOrEmpty(profile.SingleExecutableFile) && File.Exists(profile.SingleExecutableFile))
+        else if (!string.IsNullOrEmpty(profile.SingleExecutableFile) &&
+                 !SettingsSerializer.IsPathWhitelisted(profile.SingleExecutableFile) &&
+                 File.Exists(profile.SingleExecutableFile))
         {
             AddResidualIfUnique(results, new ResidualItem
             {
@@ -334,7 +351,7 @@ public class ResidualScanner
                 foreach (var dir in Directory.GetDirectories(root))
                 {
                     string normDir = dir.TrimEnd('\\', '/');
-                    if (protectedSiblingDirs.Contains(normDir))
+                    if (protectedSiblingDirs.Contains(normDir) || SettingsSerializer.IsPathWhitelisted(normDir))
                         continue;
 
                     string dirName = Path.GetFileName(dir);
@@ -353,7 +370,8 @@ public class ResidualScanner
                             {
                                 foreach (var subDir in Directory.GetDirectories(dir))
                                 {
-                                    if (protectedSiblingDirs.Contains(subDir.TrimEnd('\\', '/')))
+                                    string normSub = subDir.TrimEnd('\\', '/');
+                                    if (protectedSiblingDirs.Contains(normSub) || SettingsSerializer.IsPathWhitelisted(normSub))
                                         continue;
 
                                     string subName = Path.GetFileName(subDir);
@@ -361,6 +379,12 @@ public class ResidualScanner
 
                                     if (MatchesProfile(subName, profile, deepFuzzy, out string subReason, out var conf))
                                     {
+                                        if (conf == ConfidenceLevel.Low &&
+                                            AuthenticodeVerifier.IsDirectoryProtectedByForeignSignature(subDir, profile, out _))
+                                        {
+                                            continue;
+                                        }
+
                                         AddResidualIfUnique(results, new ResidualItem
                                         {
                                             Type = ResidualType.Directory,
@@ -381,6 +405,15 @@ public class ResidualScanner
 
                     if (MatchesProfile(dirName, profile, deepFuzzy, out string matchReason, out var confidence))
                     {
+                        // Guardrail: In Advanced deep fuzzy mode or Program Files, verify Authenticode signatures
+                        // so a foreign signed vendor folder is never flagged by a loose token substring match!
+                        if ((confidence == ConfidenceLevel.Low || isProgFiles) &&
+                            !normDir.Equals(profile.NormalizedLocation, StringComparison.OrdinalIgnoreCase) &&
+                            AuthenticodeVerifier.IsDirectoryProtectedByForeignSignature(dir, profile, out _))
+                        {
+                            continue;
+                        }
+
                         AddResidualIfUnique(results, new ResidualItem
                         {
                             Type = ResidualType.Directory,
@@ -494,6 +527,9 @@ public class ResidualScanner
 
                 if (MatchesProfile(name, profile, deepFuzzy: true, out string reason, out _))
                 {
+                    if (AuthenticodeVerifier.IsDirectoryProtectedByForeignSignature(dir, profile, out _))
+                        continue;
+
                     AddResidualIfUnique(results, new ResidualItem
                     {
                         Type = ResidualType.Directory,
@@ -658,25 +694,54 @@ public class ResidualScanner
         return new string(chars).Trim();
     }
 
+    /// <summary>
+    /// Deduplicates residual items by normalized path and value name, upgrading existing entries
+    /// if a more specialized scanner discovers richer metadata (e.g. ServiceName, DriverPublishedInfName, or higher Confidence).
+    /// </summary>
     public static void AddResidualIfUnique(List<ResidualItem> results, ResidualItem item)
     {
         string normItemPath = item.Type is ResidualType.RegistryKey or ResidualType.RegistryValue
             ? RegistryBackup.NormalizeHivePrefix(item.Path)
             : item.Path.Trim().TrimEnd('\\', '/');
 
-        bool exists = results.Any(r =>
+        string itemValName = item.ValueName ?? string.Empty;
+
+        var existing = results.FirstOrDefault(r =>
         {
             string normExisting = r.Type is ResidualType.RegistryKey or ResidualType.RegistryValue
                 ? RegistryBackup.NormalizeHivePrefix(r.Path)
                 : r.Path.Trim().TrimEnd('\\', '/');
 
             return normExisting.Equals(normItemPath, StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(r.ValueName ?? string.Empty, item.ValueName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+                   string.Equals(r.ValueName ?? string.Empty, itemValName, StringComparison.OrdinalIgnoreCase);
         });
 
-        if (!exists)
+        if (existing == null)
         {
             results.Add(item);
+            return;
+        }
+
+        // Upgrade existing entry if the new item carries specialized service/driver/task metadata or higher confidence
+        if (!string.IsNullOrEmpty(item.ServiceName) && string.IsNullOrEmpty(existing.ServiceName))
+        {
+            existing.ServiceName = item.ServiceName;
+            existing.Category = item.Category;
+            existing.Reason = item.Reason;
+        }
+        if (!string.IsNullOrEmpty(item.DriverPublishedInfName) && string.IsNullOrEmpty(existing.DriverPublishedInfName))
+        {
+            existing.DriverPublishedInfName = item.DriverPublishedInfName;
+        }
+        if (!string.IsNullOrEmpty(item.ValuePreview) && string.IsNullOrEmpty(existing.ValuePreview))
+        {
+            existing.ValuePreview = item.ValuePreview;
+        }
+        if (item.Confidence < existing.Confidence) // High (0) < Medium (1) < Low (2)
+        {
+            existing.Confidence = item.Confidence;
+            existing.Reason = item.Reason;
+            existing.IsSelected = item.IsSelected;
         }
     }
 

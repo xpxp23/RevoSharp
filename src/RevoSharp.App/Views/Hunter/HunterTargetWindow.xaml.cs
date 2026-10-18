@@ -23,6 +23,7 @@ public partial class HunterTargetWindow : Window
     private readonly Action<InstalledApp, List<ResidualItem>> _openReviewCallback;
 
     private readonly TargetHighlightOverlay _overlay;
+    private readonly Dictionary<IntPtr, HunterTargetInfo?> _aimWindowCache = [];
     private bool _isAiming;
     private bool _isRightButtonDown;
     private bool _isRightDragging;
@@ -91,8 +92,6 @@ public partial class HunterTargetWindow : Window
             Focus();
         };
 
-        // Critical lifecycle fix: If HunterTargetWindow is closed via Alt+F4 or OS close event,
-        // always clean up _overlay / _currentHud and restore _mainWindow so no zombie background process remains!
         Closed += (s, e) =>
         {
             SetClickThrough(false);
@@ -159,6 +158,7 @@ public partial class HunterTargetWindow : Window
         _isAiming = false;
         _lastInspectedHwnd = IntPtr.Zero;
         _currentTarget = null;
+        _aimWindowCache.Clear();
         SetClickThrough(false);
         ReleaseMouseCapture();
         Cursor = Cursors.Hand;
@@ -185,6 +185,7 @@ public partial class HunterTargetWindow : Window
         _isAiming = true;
         _currentTarget = null;
         _lastInspectedHwnd = IntPtr.Zero;
+        _aimWindowCache.Clear();
         _dragStartPoint = e.GetPosition(this);
         CaptureMouse();
         Cursor = Cursors.Cross;
@@ -244,7 +245,11 @@ public partial class HunterTargetWindow : Window
                 if (candidateHwnd != _lastInspectedHwnd)
                 {
                     _lastInspectedHwnd = candidateHwnd;
-                    _currentTarget = _hunterService.InspectWindowHandle(candidateHwnd, _installedApps, includeDeepAutostartScan: false);
+                    if (!_aimWindowCache.TryGetValue(candidateHwnd, out _currentTarget))
+                    {
+                        _currentTarget = _hunterService.InspectWindowHandle(candidateHwnd, _installedApps, includeDeepAutostartScan: false);
+                        _aimWindowCache[candidateHwnd] = _currentTarget;
+                    }
                 }
 
                 if (_currentTarget != null)
@@ -291,6 +296,7 @@ public partial class HunterTargetWindow : Window
         if (!_isAiming) return;
         _isAiming = false;
         _lastInspectedHwnd = IntPtr.Zero;
+        _aimWindowCache.Clear();
         SetClickThrough(false);
         ReleaseMouseCapture();
         Cursor = Cursors.Hand;
@@ -301,7 +307,6 @@ public partial class HunterTargetWindow : Window
 
         if (_currentTarget != null)
         {
-            // Open HUD immediately on mouse release! HunterActionHudViewModel scans autostart persistence asynchronously in the background.
             GetCursorPos(out POINT pt);
             ShowActionHud(_currentTarget, new Point(pt.X, pt.Y));
         }

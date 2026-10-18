@@ -21,21 +21,30 @@ public class FileSystemTreeNode : INotifyPropertyChanged
     public bool IsContainerOnly => !IsMatched;
     public double NodeOpacity => IsMatched ? 1.0 : 0.72;
 
+    public bool HasSize => AssociatedItem != null && AssociatedItem.SizeInBytes > 0;
+    public string FormattedSize => AssociatedItem?.FormattedSize ?? string.Empty;
+    public bool IsLowConfidence => AssociatedItem?.Confidence == ConfidenceLevel.Low;
+    public bool IsLocked => AssociatedItem?.IsLocked == true;
+    public string LockedBySummary => AssociatedItem?.LockedBySummary ?? string.Empty;
+
     private bool? _isChecked = true;
     public bool? IsChecked
     {
         get => _isChecked;
         set
         {
-            // Coerce user clicks from indeterminate (null) to false so 1-click unchecking always works cleanly
+            // When user clicks a Checked (true) 3-state CheckBox, WPF passes null; coerce user click to false.
+            // Indeterminate (null) state is still set programmatically by RecalculateCheckStateFromChildren / SyncFromItemSelection.
             bool targetValue = value ?? false;
             if (_isChecked != targetValue)
             {
+                using var _ = TreeSelectionSyncScope.BeginBatch();
                 _isChecked = targetValue;
                 OnPropertyChanged(nameof(IsChecked));
 
                 if (AssociatedItem != null)
                 {
+                    AssociatedItem.IsDemotedByChildUncheck = false;
                     AssociatedItem.IsSelected = targetValue;
                 }
 
@@ -45,6 +54,10 @@ public class FileSystemTreeNode : INotifyPropertyChanged
                 }
 
                 Parent?.RecalculateCheckStateFromChildren();
+            }
+            else if (value == null && _isChecked == true)
+            {
+                OnPropertyChanged(nameof(IsChecked));
             }
         }
     }
@@ -73,6 +86,7 @@ public class FileSystemTreeNode : INotifyPropertyChanged
 
         if (AssociatedItem != null)
         {
+            AssociatedItem.IsDemotedByChildUncheck = false;
             AssociatedItem.IsSelected = isChecked;
         }
 
@@ -101,6 +115,7 @@ public class FileSystemTreeNode : INotifyPropertyChanged
             // If any child is unchecked or indeterminate, the parent directory item itself cannot remain whole-folder selected
             if (!allChildrenChecked && AssociatedItem != null && AssociatedItem.IsSelected)
             {
+                AssociatedItem.IsDemotedByChildUncheck = !allChildrenUnchecked;
                 AssociatedItem.IsSelected = false;
             }
 
@@ -108,6 +123,11 @@ public class FileSystemTreeNode : INotifyPropertyChanged
             bool isAllTrue = allChildrenChecked && (selfState ?? true);
             bool isAllFalse = allChildrenUnchecked && !(selfState ?? false);
             bool? computed = isAllTrue ? true : (isAllFalse ? false : null);
+
+            if (AssociatedItem != null && computed == null)
+            {
+                AssociatedItem.IsDemotedByChildUncheck = true;
+            }
 
             if (_isChecked != computed)
             {
@@ -135,14 +155,14 @@ public class FileSystemTreeNode : INotifyPropertyChanged
         bool? newState = allChecked ? true : (allUnchecked ? false : null);
 
         // When user interactively unchecks a child node in the TreeView, ensure the parent directory's own
-        // AssociatedItem is deselected unless all children are checked, preventing whole-folder collateral deletion.
+        // AssociatedItem is deselected unless all children are checked, and mark IsDemotedByChildUncheck if partially checked.
         if (AssociatedItem != null)
         {
+            AssociatedItem.IsDemotedByChildUncheck = newState == null;
             AssociatedItem.IsSelected = newState == true;
         }
 
-        bool stateChanged = _isChecked != newState;
-        if (stateChanged)
+        if (_isChecked != newState)
         {
             _isChecked = newState;
             OnPropertyChanged(nameof(IsChecked));
@@ -159,6 +179,7 @@ public class FileSystemTreeNode : INotifyPropertyChanged
         ResidualCategory.Shortcut => "Link24",
         ResidualCategory.ScheduledTask => "Clock24",
         ResidualCategory.DriverPackage => "Wrench24",
+        ResidualCategory.NtfsMftMatch => IsFile ? "Document24" : "HardDrive24",
         ResidualCategory.File => "Document24",
         _ => IsFile ? "Document24" : "Folder24"
     };

@@ -16,7 +16,7 @@ public static class FileBackup
     private static int _fileBackupSeq;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct SHFILEOPSTRUCT
+    private struct SHFILEOPSTRUCT64
     {
         public IntPtr hwnd;
         public int wFunc;
@@ -32,11 +32,58 @@ public static class FileBackup
         public string? lpszProgressTitle;
     }
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern int SHFileOperation(ref SHFILEOPSTRUCT FileOp);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
+    private struct SHFILEOPSTRUCT32
+    {
+        public IntPtr hwnd;
+        public int wFunc;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string pFrom;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string? pTo;
+        public ushort fFlags;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string? lpszProgressTitle;
+    }
+
+    [DllImport("shell32.dll", EntryPoint = "SHFileOperationW", CharSet = CharSet.Unicode)]
+    private static extern int SHFileOperation64(ref SHFILEOPSTRUCT64 FileOp);
+
+    [DllImport("shell32.dll", EntryPoint = "SHFileOperationW", CharSet = CharSet.Unicode)]
+    private static extern int SHFileOperation32(ref SHFILEOPSTRUCT32 FileOp);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool MoveFileEx(string lpExistingFileName, string? lpNewFileName, uint dwFlags);
+
+    private static (int Result, bool Aborted) ExecuteShDeleteWithUndo(string doubleNullJoinedPaths)
+    {
+        const ushort flags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+        if (IntPtr.Size == 8)
+        {
+            var op64 = new SHFILEOPSTRUCT64
+            {
+                wFunc = FO_DELETE,
+                pFrom = doubleNullJoinedPaths,
+                fFlags = flags
+            };
+            int res = SHFileOperation64(ref op64);
+            return (res, op64.fAnyOperationsAborted);
+        }
+        else
+        {
+            var op32 = new SHFILEOPSTRUCT32
+            {
+                wFunc = FO_DELETE,
+                pFrom = doubleNullJoinedPaths,
+                fFlags = flags
+            };
+            int res = SHFileOperation32(ref op32);
+            return (res, op32.fAnyOperationsAborted);
+        }
+    }
 
     /// <summary>
     /// Creates a direct snapshot copy of a small file (e.g. .lnk shortcut, config file up to 16 MB)
@@ -72,14 +119,14 @@ public static class FileBackup
     }
 
     /// <summary>
-    /// High-speed batch Recycle Bin transaction: joins multiple file/folder paths with '\0' and terminates with '\0\0'
-    /// in a single SHFileOperation call, falling back to per-item recycling if any locked file in the batch causes partial failure.
-    /// Returns the set of original paths that were confirmed moved to the Recycle Bin.
+    /// High-speed batch Recycle Bin transaction: coalesces descendant paths covered by an ancestor directory in the same batch,
+    /// joins top-level paths with '\0' and terminates with '\0\0' in a single SHFileOperation call, and falls back to per-item
+    /// recycling if any locked file in the batch causes partial failure.
     /// </summary>
     public static HashSet<string> SendToRecycleBinBatch(IEnumerable<string> paths)
     {
         var succeeded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var normalizedMap = new List<(string RawPath, string CleanPath)>();
+        var normalizedMap = new List<(string RawPath, string CleanPath, bool IsDirectory)>();
 
         foreach (var raw in paths)
         {
@@ -87,10 +134,12 @@ public static class FileBackup
             try
             {
                 string clean = Path.GetFullPath(raw.Trim().Trim('"')).TrimEnd('\\', '/');
-                if (File.Exists(clean) || Directory.Exists(clean))
+                bool isDir = Directory.Exists(clean);
+                bool isFile = !isDir && File.Exists(clean);
+                if (isDir || isFile)
                 {
                     ClearReadOnlyAttributes(clean);
-                    normalizedMap.Add((raw, clean));
+                    normalizedMap.Add((raw, clean, isDir));
                 }
             }
             catch { }
@@ -98,24 +147,31 @@ public static class FileBackup
 
         if (normalizedMap.Count == 0) return succeeded;
 
-        // Execute in chunks of 64 paths per SHFileOperation transaction
-        foreach (var chunk in normalizedMap.Chunk(64))
+        // Collect all directories in the batch so child files/subfolders already inside a batch-deleted parent directory
+        // are not redundantly passed to SHFileOperation (which would fail on missing path after parent is recycled).
+        var batchDirs = normalizedMap
+            .Where(x => x.IsDirectory)
+            .Select(x => x.CleanPath + "\\")
+            .OrderBy(x => x.Length)
+            .ToList();
+
+        var topLevelTargets = normalizedMap
+            .Where(x => !batchDirs.Any(dirPrefix =>
+                x.CleanPath.Length > dirPrefix.Length &&
+                x.CleanPath.StartsWith(dirPrefix, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        // Execute in chunks of 64 top-level paths per SHFileOperation transaction
+        foreach (var chunk in topLevelTargets.Chunk(64))
         {
             try
             {
                 string multiNullJoined = string.Join("\0", chunk.Select(x => x.CleanPath)) + "\0\0";
-                var fileOp = new SHFILEOPSTRUCT
-                {
-                    wFunc = FO_DELETE,
-                    pFrom = multiNullJoined,
-                    fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
-                };
-
-                SHFileOperation(ref fileOp);
+                ExecuteShDeleteWithUndo(multiNullJoined);
             }
             catch { }
 
-            foreach (var (raw, clean) in chunk)
+            foreach (var (raw, clean, _) in chunk)
             {
                 if (!File.Exists(clean) && !Directory.Exists(clean))
                 {
@@ -125,6 +181,15 @@ public static class FileBackup
                 {
                     succeeded.Add(raw);
                 }
+            }
+        }
+
+        // Mark descendant items as succeeded if their parent directory was successfully recycled
+        foreach (var (raw, clean, _) in normalizedMap)
+        {
+            if (!succeeded.Contains(raw) && !File.Exists(clean) && !Directory.Exists(clean))
+            {
+                succeeded.Add(raw);
             }
         }
 
@@ -145,16 +210,8 @@ public static class FileBackup
             ClearReadOnlyAttributes(cleanPath);
 
             string doubleNullTerminatedPath = cleanPath + "\0\0";
-
-            var fileOp = new SHFILEOPSTRUCT
-            {
-                wFunc = FO_DELETE,
-                pFrom = doubleNullTerminatedPath,
-                fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
-            };
-
-            int result = SHFileOperation(ref fileOp);
-            return result == 0 && !fileOp.fAnyOperationsAborted && !File.Exists(cleanPath) && !Directory.Exists(cleanPath);
+            var (result, aborted) = ExecuteShDeleteWithUndo(doubleNullTerminatedPath);
+            return result == 0 && !aborted && !File.Exists(cleanPath) && !Directory.Exists(cleanPath);
         }
         catch
         {
